@@ -8,6 +8,7 @@ All external APIs are free + keyless:
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import subprocess
@@ -24,6 +25,20 @@ LRCLIB = "https://lrclib.net/api"
 
 GENRES = ("Rock", "Pop", "Hip-Hop", "Jazz", "Electronic", "Classical", "Metal",
           "Indie", "R&B", "Folk", "Blues", "Country", "Reggae", "Ambient")
+
+logger = logging.getLogger(__name__)
+
+# Dropped before comparing artist/title, so a match has to be on real content
+# rather than on "feat"/"the".
+_NAME_NOISE = {"feat", "feats", "ft", "with", "and", "the", "a", "an", "of", "to", "from"}
+
+
+def _name_tokens(s) -> set[str]:
+    """Loose word tokens for comparing names. Unicode-aware — a Latin-only
+    pattern would reduce a Japanese/Hindi title to an empty set, which would
+    then "match" anything."""
+    return {w for w in re.findall(r"[^\W_]+", str(s or "").lower())
+            if (len(w) > 1 or not w.isascii()) and w not in _NAME_NOISE}
 
 
 def _sniff_image(data: bytes) -> str | None:
@@ -203,26 +218,68 @@ class PostProcessor:
 
     # -- lyrics ---------------------------------------------------------
     def lyrics(self, artist: str, title: str) -> dict | None:
-        if not self.do_lyrics:
+        """LRCLIB lookup: exact query first, then fuzzy fallbacks, with hit
+        verification.
+
+        The exact `artist_name`/`track_name` query fails whenever the source hands
+        us a multi-artist credit ("4na, Shun Ueno", "Daft Punk, Pharrell Williams,
+        Nile Rodgers") — routine for YT Music metadata. LRCLIB then reports 0 hits
+        even though the song is there, so lyrics were silently skipped for tracks
+        that genuinely exist. Fall back to `q="{artist} {title}"`, then
+        `q="{title}"`.
+
+        Hits are scored, never trusted in order: LRCLIB ranks by relevance and the
+        top entry can be a different artist with no lyrics at all (q='あこがれ'
+        ranks MIMiNARI above the correct 4na entry). A hit whose artist/title does
+        not match is dropped — no lyrics beats the wrong artist's lyrics.
+        """
+        if not self.do_lyrics or not (title or "").strip():
             return None
+        queries: list[dict] = [{"artist_name": artist, "track_name": title}]
+        if (artist or "").strip():
+            queries.append({"q": f"{artist} {title}".strip()})
+        queries.append({"q": title.strip()})
+        for params in queries:
+            hit = self._best_lyric_hit(self._lrclib_search(params), artist, title)
+            if hit:
+                return hit
+        logger.info("lyrics: nothing usable on LRCLIB for %r - %r", artist, title)
+        return None
+
+    def _lrclib_search(self, params: dict) -> list:
+        """One LRCLIB /search call. Never raises — lyrics are best-effort."""
         try:
-            r = requests.get(
-                f"{LRCLIB}/search",
-                params={"artist_name": artist, "track_name": title},
-                timeout=15,
-            )
+            r = requests.get(f"{LRCLIB}/search", params=params, timeout=15,
+                             headers={"User-Agent": self.ua})
             if r.status_code != 200:
-                return None
+                logger.debug("lrclib %s -> HTTP %s", params, r.status_code)
+                return []
             hits = r.json() or []
-            if not hits:
-                return None
-            hit = hits[0]
-            return {
-                "synced": hit.get("syncedLyrics") or None,
-                "plain": hit.get("plainLyrics") or None,
-            }
-        except requests.RequestException:
-            return None
+            return hits if isinstance(hits, list) else []
+        except requests.RequestException as exc:
+            logger.debug("lrclib %s failed: %s", params, exc)
+            return []
+
+    @staticmethod
+    def _best_lyric_hit(hits: list, artist: str, title: str) -> dict | None:
+        """Best hit that carries lyrics AND matches this artist/title."""
+        want_a, want_t = _name_tokens(artist), _name_tokens(title)
+        best, best_score = None, 0
+        for h in hits:
+            synced = h.get("syncedLyrics") or None
+            plain = h.get("plainLyrics") or None
+            if not (synced or plain):
+                continue  # entry carries no lyrics text — useless
+            got_a = _name_tokens(h.get("artistName"))
+            got_t = _name_tokens(h.get("trackName"))
+            if want_t and got_t and not (want_t & got_t):
+                continue  # different song
+            if want_a and got_a and not (want_a & got_a):
+                continue  # different artist — never embed this
+            score = (2 if synced else 1) + (2 if want_a and got_a else 0)
+            if score > best_score:
+                best, best_score = {"synced": synced, "plain": plain}, score
+        return best
 
     # -- apply ----------------------------------------------------------
     def apply(self, path: str, meta: dict, lyrics: dict | None, cover: bytes | None,

@@ -39,7 +39,11 @@ album/playlist — downloaded in full, tagged correctly, filed correctly.**
   every track to the clean studio version, and downloads everything.
 - **Real metadata pipeline** — MusicBrainz (artist/album/track/year), LRCLIB
   (synced + plain lyrics, embedded + `.lrc` sidecar), cover art (embedded +
-  `folder.jpg` for Jellyfin).
+  `folder.jpg` for Jellyfin). Lyrics lookups retry with a fuzzy query when the
+  exact artist/title search comes up empty — source metadata often carries
+  multi-artist credits ("4na, Shun Ueno") that LRCLIB's exact match rejects —
+  and every hit is checked against the artist/title before it's embedded, so a
+  wrong-artist entry is never written.
 - **Jellyfin-native layout** — files land as `Artist/Album/Song.m4a` with the
   multi-artist `Artist A; Artist B` convention preserved.
 - **Two control surfaces** — a Telegram bot (search → pick → download → the
