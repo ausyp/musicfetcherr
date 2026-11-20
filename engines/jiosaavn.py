@@ -139,11 +139,13 @@ class JioSaavnEngine:
         url96 = _decrypt_url(enc)
 
         want = 320 if mi.get("320kbps") == "true" else 160
+        failures = []
         for q in (want, 160, 96):
             url = _pick_quality_url(url96, q)
             try:
                 with self.session.get(url, stream=True, timeout=180) as resp:
                     if resp.status_code != 200:
+                        failures.append(f"{q} kbps: HTTP {resp.status_code}")
                         logger.info("jiosaavn: fmt %s -> HTTP %s, trying lower", q, resp.status_code)
                         continue
                     dest = self.staging / f"track_{tid}.m4a"
@@ -156,8 +158,9 @@ class JioSaavnEngine:
                     logger.info("jiosaavn: downloaded %s (%d bytes, q%d)", tid, dest.stat().st_size, q)
                     return dest
             except (requests.RequestException, OSError) as exc:
+                failures.append(f"{q} kbps: {type(exc).__name__}")
                 logger.info("jiosaavn: fmt %s failed: %s", q, exc)
-        raise JioSaavnError(f"jiosaavn: all qualities failed for {tid}")
+        raise JioSaavnError(f"All JioSaavn qualities failed for {tid} ({'; '.join(failures)})")
 
     # -- metadata -------------------------------------------------------
     def meta(self, local: Path, pick: dict, query: str) -> dict:

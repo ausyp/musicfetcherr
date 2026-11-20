@@ -112,7 +112,7 @@ def send_audio(chat: int, path: str, caption: str):
         tg("sendAudio", chat_id=chat, caption=caption[:1024],
            files={"audio": (Path(path).name, data)}, _timeout=300)
     except Exception as exc:
-        say(chat, f"⚠️ upload failed ({exc})")
+        say(chat, f"⚠️ The file was saved to your library. Telegram upload failed ({failure_reason(exc)}).")
 
 
 def poll_job(job_id: str, cap: int | None = 320, on_progress=None) -> dict:
@@ -349,21 +349,37 @@ def probe(path) -> str:
     return br_k or fmt or ""
 
 
-def fmt_attempts(attempts) -> str:
-    """Delivery trail: 'ytmusic ✘ (403) → qbit ✔ FLAC fallback'."""
-    if not attempts:
-        return ""
-    bits = []
-    for a in attempts:
-        src = str(a.get("source") or "?")
-        if a.get("status") == "ok":
-            note = f" ({a['note']})" if a.get("note") else ""
-            bits.append(f"{src} ✔{note}")
+def failure_reason(error, limit: int = 240) -> str:
+    reason = " ".join(str(error or "Unknown error").split())
+    # Media and proxy URLs can include credentials or signed query strings.
+    reason = re.sub(r"https?://[^\s<>]+", "[URL]", reason, flags=re.IGNORECASE)
+    return html.escape(reason if len(reason) <= limit else reason[:limit - 1] + "…")
+
+
+def fmt_attempts(attempts, limit: int = 240) -> str:
+    names = {"jiosaavn": "JioSaavn", "youtube_music": "YouTube Music", "qbit": "FLAC (qBittorrent)"}
+    lines = []
+    for attempt in attempts or []:
+        source = str(attempt.get("source") or "Unknown source")
+        label = html.escape(names.get(source, source))
+        status = attempt.get("status")
+        if status == "ok":
+            pack = attempt.get("pack")
+            note = f" ({html.escape(str(pack)[:120])})" if pack else ""
+            lines.append(f"• {label} — succeeded{note}")
+        elif status == "skipped":
+            lines.append(f"• {label} — skipped ({failure_reason(attempt.get('error'), limit)})")
+        elif status == "no_match":
+            lines.append(f"• {label} — no matching track found")
         else:
-            err = str(a.get("error") or "failed").strip()
-            # trim the noisy yt-dlp traceback tail to the first real message
-            bits.append(f"{src} ✘ {err[:70]}")
-    return " → ".join(bits)
+            lines.append(f"• {label} — failed ({failure_reason(attempt.get('error'), limit)})")
+    return "\n".join(lines)
+
+
+def job_failure(job: dict, job_id: str, heading: str) -> str:
+    attempts = fmt_attempts(job.get("attempts"))
+    detail = attempts or failure_reason(job.get("error"))
+    return f"{heading}\n{detail}\nJob <code>{html.escape(job_id)}</code>"
 
 
 # -- flows ----------------------------------------------------------------
@@ -373,11 +389,14 @@ def flow_search(chat: int, query: str):
     try:
         jid = api("/api/search", {"query": query})["job_id"]
     except Exception as exc:
-        say(chat, f"❌ API error: {exc}")
+        say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
     j = poll_job(jid)
-    if j["status"] != "done" or not (j.get("result") or {}).get("candidates"):
-        say(chat, f"❌ no results for <i>{html.escape(query)}</i>")
+    if j["status"] != "done":
+        say(chat, job_failure(j, jid, "❌ Search did not complete"))
+        return
+    if not (j.get("result") or {}).get("candidates"):
+        say(chat, f"❌ No results for <i>{html.escape(query)}</i>")
         return
     cands = j["result"]["candidates"]
     # Cluster candidates into "same track, different source" groups. Matching is
@@ -432,7 +451,7 @@ def _do_download(chat: int, pick: dict):
     try:
         jid = api("/api/download", {"query": q, "pick": pick})["job_id"]
     except Exception as exc:
-        say(chat, f"❌ API error: {exc}")
+        say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
     j = poll_job(jid)
     res = j.get("result") or {}
@@ -453,8 +472,8 @@ def _do_download(chat: int, pick: dict):
             extra.append(f"cover {'yes' if res['cover'] else 'no'}")
         if extra:
             msg += f" · ({', '.join(extra)})"
-        if tr:
-            msg += f"\n↪️ {html.escape(tr)}"
+        if len(res.get("attempts") or []) > 1:
+            msg += f"\n<b>Sources tried</b>\n{tr}"
         msg += f"\n<code>{html.escape(out)}</code>"
         say(chat, msg)
         try:
@@ -463,8 +482,7 @@ def _do_download(chat: int, pick: dict):
         except OSError:
             pass
     else:
-        say(chat, f"❌ {html.escape(str(j.get('error') or 'download failed'))}"
-                 + (f"\n↪️ {html.escape(tr)}" if tr else ""))
+        say(chat, job_failure(j, jid, f"❌ Download did not complete for {fmt_pick(pick)}"))
 
 
 def flow_link(chat: int, url: str):
@@ -489,7 +507,7 @@ def flow_link(chat: int, url: str):
                 msg += "\n" + LIMIT_NOTE.format(n=r["limited"])
             say(chat, msg)
         elif j.get("status") == "error":
-            say(chat, f"❌ couldn't read that link: {html.escape(str(j.get('error') or ''))}")
+            say(chat, job_failure(j, jid, "❌ Couldn’t read that link"))
             return
     _link_download(chat, url)
 
@@ -528,7 +546,7 @@ def _link_download(chat: int, url: str):
     try:
         jid = api("/api/playlist", {"url": url})["job_id"]
     except Exception as exc:
-        say(chat, f"❌ API error: {exc}")
+        say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
     try:
         if api(f"/api/job/{jid}").get("status") == "queued":
@@ -549,7 +567,12 @@ def _link_download(chat: int, url: str):
     j = poll_job(jid, cap=None, on_progress=on_progress)
     res = j.get("result") or {}
     if j["status"] != "done":
-        say(chat, f"❌ {html.escape(str(j.get('error') or 'job failed'))}")
+        heading = "❌ Link job stopped" if j["status"] == "error" else "⚠️ Link job status unavailable"
+        p = j.get("progress") or {}
+        if p.get("total"):
+            heading += (f" after processing {p['done']}/{p['total']} tracks"
+                        f" ({p['downloaded']} downloaded)")
+        say(chat, job_failure(j, jid, heading))
         return
     if res.get("skipped") is True:
         picked = res.get("picked") or {}
@@ -572,8 +595,8 @@ def _link_download(chat: int, url: str):
         tra = fmt_attempts(res.get("attempts"))
         if qual:
             msg += f" · 🎧 <b>{html.escape(qual)}</b>"
-        if tra:
-            msg += f"\n↪️ {html.escape(tra)}"
+        if len(res.get("attempts") or []) > 1:
+            msg += f"\n<b>Sources tried</b>\n{tra}"
         msg += f"\n<code>{html.escape(out)}</code>"
         say(chat, msg)
         try:
@@ -587,7 +610,8 @@ def _link_download(chat: int, url: str):
     name = html.escape(str(res.get("name") or "playlist"))
     total, dl = res.get("total", 0), res.get("downloaded", 0)
     skipped = res.get("skipped") or []
-    head = f"✅ <b>{name}</b> — {dl} downloaded"
+    icon = "⚠️" if errs else "✅"
+    head = f"{icon} <b>{name}</b> — {dl} downloaded"
     if skipped:
         head += f", ⏭ {len(skipped)} already had"
     head += f" (of {total})"
@@ -599,12 +623,26 @@ def _link_download(chat: int, url: str):
                                                 "failed": len(errs)}))
     outs = res.get("outputs") or []
     if errs:
-        head += f"\n⚠️ {len(errs)} failed:"
-        for e in errs[:5]:
-            head += f"\n• {html.escape(str(e.get('track') or e))[:120]}"
-        if len(errs) > 5:
-            head += f"\n… +{len(errs) - 5} more"
+        head += f"\n⚠️ {len(errs)} tracks failed. The playlist finished processing."
     say(chat, head)
+    if errs:
+        lines = []
+        for e in errs[:5]:
+            track = html.escape(str(e.get("track") or "Unknown track")[:120])
+            detail = fmt_attempts(e.get("attempts"), limit=160) or failure_reason(e.get("error"))
+            lines.append(f"❌ <b>{track}</b>\n{detail}")
+        if len(errs) > 5:
+            lines.append(f"Showing the first 5 of {len(errs)} failures.")
+        lines.append(f"Job <code>{html.escape(jid)}</code>")
+        say(chat, "\n\n".join(lines))
+    recovered = [out for out in outs if len(out.get("attempts") or []) > 1]
+    if recovered:
+        lines = [f"↪️ <b>{len(recovered)} tracks downloaded using a fallback</b>"]
+        for out in recovered[:3]:
+            picked = out.get("picked") or {}
+            track = html.escape(str(picked.get("title") or "Unknown track")[:120])
+            lines.append(f"<b>{track}</b>\n{fmt_attempts(out['attempts'], limit=120)}")
+        say(chat, "\n\n".join(lines))
     if len(outs) == 1 and outs[0].get("output"):
         p = outs[0]["output"]
         try:
@@ -618,7 +656,7 @@ def flow_status(chat: int):
     try:
         jobs = api("/api/jobs")
     except Exception as exc:
-        say(chat, f"❌ API error: {exc}")
+        say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
     if not jobs:
         say(chat, "🫥 queue is empty")

@@ -95,6 +95,12 @@ def _jio_engine():
     return None
 
 
+class DownloadFailed(EngineError):
+    def __init__(self, reason: str, attempts: list[dict]):
+        super().__init__(reason)
+        self.attempts = attempts
+
+
 def _download_with_failover(pick: dict) -> tuple:
     """engine.download(pick); on failure automatically falls back to the qbit
     FLAC (torrent) tier. Returns (local_path, attempts_trail) — the trail lets
@@ -106,15 +112,17 @@ def _download_with_failover(pick: dict) -> tuple:
     """
     attempts = []
     src = pick.get("source")
+    skipped = False
     try:
         if src == "jiosaavn" and not egress.jiosaavn_ok():
-            raise EngineError(f"JioSaavn skipped: traffic is leaving from "
-                              f"{egress.country() or '?'} (India exit node unavailable)")
+            skipped = True
+            raise EngineError(f"India exit node unavailable (egress: {egress.country() or '?'})")
         local = engine.download(pick)
         attempts.append({"source": src, "status": "ok"})
         return local, attempts
     except Exception as exc:
-        attempts.append({"source": src, "status": "failed", "error": str(exc)})
+        attempts.append({"source": src, "status": "skipped" if skipped else "failed",
+                         "error": str(exc)})
         # JioSaavn (or any non-YT source) failed -> same song from YouTube Music.
         if src != "youtube_music" and pick.get("title"):
             try:
@@ -128,6 +136,8 @@ def _download_with_failover(pick: dict) -> tuple:
                     attempts.append({"source": "youtube_music", "status": "ok",
                                      "note": "YouTube Music fallback"})
                     return local, attempts
+                attempts.append({"source": "youtube_music", "status": "no_match",
+                                 "error": "No matching track found"})
             except Exception as yex:
                 attempts.append({"source": "youtube_music", "status": "failed",
                                  "error": str(yex)})
@@ -159,7 +169,11 @@ def _download_with_failover(pick: dict) -> tuple:
             except Exception as fex:
                 attempts.append({"source": "qbit", "status": "failed",
                                  "error": str(fex)})
-        raise
+        elif src != "qbit":
+            attempts.append({"source": "qbit", "status": "skipped",
+                             "error": "FLAC fallback is not configured" if qbit is None else
+                             "Song title and artist are unavailable"})
+        raise DownloadFailed(str(exc) or type(exc).__name__, attempts) from exc
 
 
 def _download_one(pick: dict, query: str, album_hint: str = "",
@@ -287,8 +301,8 @@ def run_job(payload: dict) -> dict:
                 raise EngineError(
                     "this YouTube video is unavailable (removed/private/"
                     "region-blocked) and no song title could be fetched — so "
-                    "there is nothing to search the FLAC index with. Paste a "
-                    "Spotify/song link or search by name instead.")
+                    "YouTube Music and FLAC fallback searches need a song title. "
+                    "Paste a Spotify link or search by song name.")
             return _download_one(pick, pick.get("title") or d["id"])
         # Album links (YT Music OLAK album auto-playlists, Spotify albums)
         # mean every track belongs to ONE album: force the album tag and keep
@@ -321,11 +335,14 @@ def run_job(payload: dict) -> dict:
                 if have:
                     skipped.append({"track": label, "output": have})
                     continue
-            pick = t.get("pick") or match_with_rescue(ytm, t,
-                                                       authoritative_duration=(d["source"] == "spotify"),
-                                                       jio=jio)
+            try:
+                pick = t.get("pick") or match_with_rescue(
+                    ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
+            except Exception as exc:
+                raise EngineError(f"Track matching failed for {label}: {exc or type(exc).__name__}") from exc
             if not pick:
-                errors.append({"track": f"{t['artist']} - {t['title']}", "error": "no match"})
+                errors.append({"track": label, "error": "No matching track found on YouTube Music"
+                               + (" or JioSaavn" if d["source"] == "spotify" and jio else "")})
                 continue
             try:
                 # album links: force the album title; spotify tracks in plain
@@ -345,8 +362,10 @@ def run_job(payload: dict) -> dict:
                     skipped.append({"track": label, "output": out["output"]})
                 else:
                     outputs.append(out)
-            except Exception as exc:  # one bad track must not kill the dump
-                errors.append({"track": f"{t['artist']} - {t['title']}", "error": str(exc)})
+            except DownloadFailed as exc:
+                errors.append({"track": label, "error": str(exc), "attempts": exc.attempts})
+            except Exception as exc:
+                errors.append({"track": label, "error": str(exc) or type(exc).__name__})
         progress(n)
         return {"name": pl["name"], "total": len(pl["tracks"]),
                 "downloaded": len(outputs), "errors": errors, "outputs": outputs,

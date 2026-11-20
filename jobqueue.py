@@ -72,7 +72,10 @@ class Queue:
                     job["status"] = "done"
             except Exception as exc:  # noqa: BLE001 — job must never kill the loop
                 with self._lock:
-                    job["error"] = str(exc)
+                    job["error"] = str(exc) or type(exc).__name__
+                    attempts = getattr(exc, "attempts", None)
+                    if attempts:
+                        job["attempts"] = attempts
                     job["status"] = "error"
             finally:
                 with self._lock:

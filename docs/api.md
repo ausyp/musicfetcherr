@@ -101,7 +101,11 @@ The `pick` is normally copied verbatim from a search candidate's result.
 
 `attempts` is the delivery trail (1 entry on a direct hit; 2+ when a lossy
 source failed and a higher-quality tier grabbed it). `format` reflects what
-was actually delivered (`.m4a`, `.flac`, …).
+was actually delivered (`.m4a`, `.flac`, …). A failed download job includes
+`attempts` alongside its top-level `error`. For a playlist that finishes with
+failed tracks, individual entries in `result.errors` include `attempts` when a
+download was attempted. Attempt statuses include `ok`, `failed`, `no_match`,
+and `skipped`.
 ```
 
 ## `POST /api/resolve`
