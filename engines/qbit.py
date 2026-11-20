@@ -74,7 +74,7 @@ class _QbitClient:
         self.base = q.get("url") or "http://127.0.0.1:1340"
         self.user = q.get("username") or "qbittorrent"
         self.password = q.get("password") or ""
-        self.category = q.get("category") or "musicfetch"
+        self.category = q.get("category") or "musicfetcherr"
         self.session = requests.Session()
 
     def _login(self):
@@ -147,7 +147,7 @@ class _QbitClient:
 class _Apibay:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "MusicFetch/0.2"
+        self.session.headers["User-Agent"] = "Musicfetcherr/0.2"
         self._cache: dict[str, tuple[float, list]] = {}
 
     def search(self, query: str) -> list[dict]:
@@ -275,7 +275,7 @@ class QbitEngine:
 
     def __init__(self, cfg: dict):
         d = cfg.get("qbit") or {}
-        self.staging = Path(d.get("staging_dir") or "/root/musicfetch/staging") / "qbit"
+        self.staging = Path(d.get("staging_dir") or "/root/musicfetcherr/staging") / "qbit"
         self.staging.mkdir(parents=True, exist_ok=True)
         self.qbit = _QbitClient(cfg)
         self.apibay = _Apibay()

@@ -1,6 +1,6 @@
 # Engines & source ecosystem
 
-MusicFetch's sources are **pluggable engines** behind one interface
+Musicfetcherr's sources are **pluggable engines** behind one interface
 (`engines/__init__.py`). `config.yaml → engine.order` decides the merge
 order for search and the routing for downloads (each candidate carries a
 `source` field).
@@ -8,7 +8,7 @@ order for search and the routing for downloads (each candidate carries a
 `engine.order` is also your **quality-priority lever** — edit it and restart
 the API to change which source you prefer. Default is `[qbit, jiosaavn,
 youtube_music]` (FLAC first). When a lossy source **fails** to download,
-MusicFetch automatically fails over to the higher-quality tier — see
+Musicfetcherr automatically fails over to the higher-quality tier — see
 [Download failover](#download-failover).
 
 Current engines (all live-verified):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""MusicFetch Telegram bot — thin bridge between Telegram DMs and the
-MusicFetch API on 127.0.0.1:8090.
+"""Musicfetcherr Telegram bot — thin bridge between Telegram DMs and the
+Musicfetcherr API on 127.0.0.1:8090.
 
 Stdlib-only transport (urllib long-poll on getUpdates). One thread per
 incoming message so a long-running download poll never blocks replies.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import logging
 import re
 import subprocess
@@ -28,7 +29,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("tgbot")
 
 BASE = Path(__file__).resolve().parent.parent
-CFG = yaml.safe_load((BASE / "config.yaml").read_text())
+CFG_PATH = Path(os.environ.get("MUSICFETCHERR_CONFIG") or (BASE / "config.yaml"))
+CFG = yaml.safe_load(CFG_PATH.read_text())
 API = f"http://{CFG['api']['host']}:{CFG['api']['port']}"
 TOKEN = (CFG.get("telegram_bot") or {}).get("token") or ""
 ALLOWED = set((CFG.get("telegram_bot") or {}).get("allowed_chats") or [])
@@ -49,6 +51,7 @@ _alts: dict[int, dict[int, dict[str, dict]]] = {}  # chat_id -> {n: {source: can
 def tg(method: str, **params) -> dict:
     """Call the Telegram Bot API. Files go as multipart when 'files' given."""
     files = params.pop("files", None)
+    timeout = params.pop("_timeout", 60)
     url = f"{TG}/{method}"
     if files:
         boundary = uuid.uuid4().hex
@@ -66,7 +69,7 @@ def tg(method: str, **params) -> dict:
     else:
         req = urllib.request.Request(url, data=json.dumps(params).encode(),
                                      headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -83,9 +86,20 @@ def api(method: str, body: dict | None = None, timeout: int = 60) -> dict:
 
 def say(chat: int, text: str, **kw):
     try:
-        tg("sendMessage", chat_id=chat, text=text, parse_mode="HTML", **kw)
+        r = tg("sendMessage", chat_id=chat, text=text, parse_mode="HTML", **kw)
+        return (r.get("result") or {}).get("message_id")
     except Exception as exc:
         log.warning("sendMessage failed: %s", exc)
+        return None
+
+
+def edit(chat: int, message_id, text: str):
+    if not message_id:
+        return
+    try:
+        tg("editMessageText", chat_id=chat, message_id=message_id, text=text, parse_mode="HTML")
+    except Exception as exc:  # "message is not modified" etc. — harmless
+        log.debug("editMessageText: %s", exc)
 
 
 def send_audio(chat: int, path: str, caption: str):
@@ -96,23 +110,62 @@ def send_audio(chat: int, path: str, caption: str):
         return
     try:
         tg("sendAudio", chat_id=chat, caption=caption[:1024],
-           files={"audio": (Path(path).name, data)})
+           files={"audio": (Path(path).name, data)}, _timeout=300)
     except Exception as exc:
         say(chat, f"⚠️ upload failed ({exc})")
 
 
-def poll_job(job_id: str, cap: int = 320) -> dict:
-    """Block until the API job finishes (3s cadence, cap polls)."""
-    for _ in range(cap):
+def poll_job(job_id: str, cap: int | None = 320, on_progress=None) -> dict:
+    """Block until the API job finishes (3s cadence). cap = max polls, or None
+    to wait as long as the job is alive (gives up only if the API stops
+    answering for ~5 minutes). on_progress(progress_dict) on every change."""
+    polls = fails = 0
+    last = None
+    while cap is None or polls < cap:
+        polls += 1
         try:
             j = api(f"/api/job/{job_id}")
+            fails = 0
         except Exception:
+            fails += 1
+            if fails > 100:
+                break
             time.sleep(3)
             continue
         if j.get("status") in ("done", "error"):
             return j
+        prog = j.get("progress")
+        if on_progress and prog and prog != last:
+            last = prog
+            try:
+                on_progress(prog)
+            except Exception:
+                pass
         time.sleep(3)
-    return {"status": "timeout", "error": None, "result": None}
+    return {"status": "timeout", "error": "the bot stopped waiting; the download may still finish", "result": None}
+
+
+def fmt_progress(p: dict) -> str:
+    name = html.escape(str(p.get("name") or "playlist"))
+    total, done = int(p.get("total") or 0), int(p.get("done") or 0)
+    bar_n = 12
+    filled = round(bar_n * done / total) if total else 0
+    bar = "▓" * filled + "░" * (bar_n - filled)
+    line = f"⏬ <b>{name}</b>\n{bar} {done}/{total}"
+    bits = [f"✅ {p.get('downloaded', 0)}"]
+    if p.get("skipped"):
+        bits.append(f"⏭ {p['skipped']} already had")
+    if p.get("failed"):
+        bits.append(f"⚠️ {p['failed']} failed")
+    line += "\n" + " · ".join(bits)
+    if p.get("current") and done < total:
+        line += f"\n<i>now: {html.escape(str(p['current']))[:80]}</i>"
+    return line
+
+
+LIMIT_NOTE = ("⚠️ Spotify only shares the first {n} songs of a playlist, so only "
+              "{n} will be downloaded. For the rest, split the playlist into parts "
+              "of {n} or fewer, or send a YouTube Music copy of it (no limit).")
 
 
 def fmt_dur(s) -> str:
@@ -384,6 +437,9 @@ def _do_download(chat: int, pick: dict):
     j = poll_job(jid)
     res = j.get("result") or {}
     tr = fmt_attempts(res.get("attempts"))
+    if j["status"] == "done" and res.get("skipped"):
+        say(chat, f"⏭ already in your library: {fmt_pick(pick)}\n<code>{html.escape(res['output'])}</code>")
+        return
     if j["status"] == "done" and res.get("output"):
         out = res["output"]
         qual = probe(out)
@@ -416,14 +472,24 @@ def flow_link(chat: int, url: str):
     say(chat, f"🔗 resolving <i>{html.escape(url)}</i> — queued…")
     jid = None
     try:
-        jid = api("/api/resolve", {"url": url})["job_id"]
+        jid = api("/api/resolve", {"url": url, "light": True})["job_id"]
     except Exception:
         jid = None
     if jid:
-        j = poll_job(jid, cap=180)
+        j = poll_job(jid, cap=60)
         r = j.get("result") or {}
         if j.get("status") == "done" and r.get("kind") == "track" and r.get("pick"):
             offer_link_quality(chat, url, r["pick"])
+            return
+        if j.get("status") == "done" and r.get("total"):
+            kind = {"album": "album", "playlist": "playlist"}.get(r.get("kind"), "list")
+            msg = (f"📋 <b>{html.escape(str(r.get('name') or kind))}</b> — {r['total']} tracks "
+                   f"({kind}). Starting download…")
+            if r.get("limited"):
+                msg += "\n" + LIMIT_NOTE.format(n=r["limited"])
+            say(chat, msg)
+        elif j.get("status") == "error":
+            say(chat, f"❌ couldn't read that link: {html.escape(str(j.get('error') or ''))}")
             return
     _link_download(chat, url)
 
@@ -464,10 +530,31 @@ def _link_download(chat: int, url: str):
     except Exception as exc:
         say(chat, f"❌ API error: {exc}")
         return
-    j = poll_job(jid, cap=600)
+    try:
+        if api(f"/api/job/{jid}").get("status") == "queued":
+            say(chat, "⏳ waiting for the current download to finish first…")
+    except Exception:
+        pass
+    state = {"mid": None, "at": 0.0}
+
+    def on_progress(p):
+        text = fmt_progress(p)
+        if state["mid"] is None:
+            state["mid"] = say(chat, text)
+            state["at"] = time.time()
+        elif time.time() - state["at"] >= 10:  # Telegram rate limits edits
+            edit(chat, state["mid"], text)
+            state["at"] = time.time()
+
+    j = poll_job(jid, cap=None, on_progress=on_progress)
     res = j.get("result") or {}
     if j["status"] != "done":
         say(chat, f"❌ {html.escape(str(j.get('error') or 'job failed'))}")
+        return
+    if res.get("skipped") is True:
+        picked = res.get("picked") or {}
+        say(chat, f"⏭ already in your library: <b>{html.escape(str(picked.get('artist') or ''))} — "
+                  f"{html.escape(str(picked.get('title') or ''))}</b>\n<code>{html.escape(res['output'])}</code>")
         return
     # single-track result shape: {query, picked, output, format, meta, lyrics, cover}
     if res.get("output") and "outputs" not in res:
@@ -499,7 +586,17 @@ def _link_download(chat: int, url: str):
     errs = res.get("errors") or []
     name = html.escape(str(res.get("name") or "playlist"))
     total, dl = res.get("total", 0), res.get("downloaded", 0)
-    head = f"✅ <b>{name}</b> — {dl}/{total} tracks"
+    skipped = res.get("skipped") or []
+    head = f"✅ <b>{name}</b> — {dl} downloaded"
+    if skipped:
+        head += f", ⏭ {len(skipped)} already had"
+    head += f" (of {total})"
+    if res.get("limited"):
+        head += f"\n⚠️ Only the first {res['limited']} songs of this Spotify playlist were available."
+    if state["mid"]:
+        edit(chat, state["mid"], fmt_progress({"name": res.get("name"), "total": total, "done": total,
+                                                "downloaded": dl, "skipped": len(skipped),
+                                                "failed": len(errs)}))
     outs = res.get("outputs") or []
     if errs:
         head += f"\n⚠️ {len(errs)} failed:"
@@ -538,7 +635,7 @@ def flow_status(chat: int):
 
 
 HELP = (
-    "<b>MusicFetch</b> 🎵\n\n"
+    "<b>Musicfetcherr</b> 🎵\n\n"
     "• Paste a YouTube / YouTube Music / Spotify link — a single track asks which "
     "quality first; an album/playlist downloads everything.\n"
     "• <code>search &lt;query&gt;</code> — find tracks\n"

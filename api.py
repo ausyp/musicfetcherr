@@ -1,4 +1,4 @@
-"""MusicFetch REST API.
+"""Musicfetcherr REST API.
 
   POST /api/search        {query}                    -> {job_id}  (job.result = candidates)
   POST /api/download      {query, pick}              -> {job_id}  (job.result = output)
@@ -38,8 +38,13 @@ from naming import target_path  # noqa: E402
 from postprocess import PostProcessor  # noqa: E402
 from jobqueue import Queue  # noqa: E402
 from resolvers import detect, match, match_with_rescue, spotify_tracklist, youtube_tracklist  # noqa: E402
+from plex import PlexScanner  # noqa: E402
+from navidrome import NavidromeScanner  # noqa: E402
+from egress import Egress  # noqa: E402
+from library import Library  # noqa: E402
 
-CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+CFG_PATH = os.environ.get("MUSICFETCHERR_CONFIG") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config.yaml")
 with open(CFG_PATH, encoding="utf-8") as fh:
     CFG = yaml.safe_load(fh)
 
@@ -47,6 +52,11 @@ API_TOKEN = CFG.get("api", {}).get("token") or ""
 
 engine = get_engine(CFG)
 post = PostProcessor(CFG)
+plex = PlexScanner(CFG)
+navidrome = NavidromeScanner(CFG)
+egress = Egress(CFG)
+library = Library(CFG["output"]["root"])
+SKIP_EXISTING = (CFG.get("library") or {}).get("skip_existing", True)
 # YT Music engine used directly by the URL resolver for art-track matching —
 # a pasted Spotify track must land on the clean studio version, not on a
 # JioSaavn cover (merged search would let covers in via duration ties).
@@ -74,7 +84,10 @@ def _qbit_engine():
 
 
 def _jio_engine():
-    """JioSaavn engine (rescuer for Spotify tracks with no YT match)."""
+    """JioSaavn engine (rescuer for Spotify tracks with no YT match).
+    None while on the fallback connection — JioSaavn needs an Indian IP."""
+    if not egress.jiosaavn_ok():
+        return None
     engs = engine.engines if isinstance(engine, MultiEngine) else [engine]
     for e in engs:
         if getattr(e, "name", None) == "jiosaavn":
@@ -94,11 +107,30 @@ def _download_with_failover(pick: dict) -> tuple:
     attempts = []
     src = pick.get("source")
     try:
+        if src == "jiosaavn" and not egress.jiosaavn_ok():
+            raise EngineError(f"JioSaavn skipped: traffic is leaving from "
+                              f"{egress.country() or '?'} (India exit node unavailable)")
         local = engine.download(pick)
         attempts.append({"source": src, "status": "ok"})
         return local, attempts
     except Exception as exc:
         attempts.append({"source": src, "status": "failed", "error": str(exc)})
+        # JioSaavn (or any non-YT source) failed -> same song from YouTube Music.
+        if src != "youtube_music" and pick.get("title"):
+            try:
+                yp = match(ytm, {"artist": pick.get("artist") or "",
+                                 "title": pick.get("title") or "",
+                                 "duration": pick.get("duration") or 0},
+                           authoritative_duration=False)
+                if yp:
+                    local = ytm.download(yp)
+                    pick.update(yp)  # tag/meta from the pick we actually got
+                    attempts.append({"source": "youtube_music", "status": "ok",
+                                     "note": "YouTube Music fallback"})
+                    return local, attempts
+            except Exception as yex:
+                attempts.append({"source": "youtube_music", "status": "failed",
+                                 "error": str(yex)})
         qbit = _qbit_engine()
         # Only attempt the FLAC fallback when we actually have a song identity
         # to search the torrent index with. An empty query (dead-video link,
@@ -142,6 +174,10 @@ def _download_one(pick: dict, query: str, album_hint: str = "",
     dir_artist: album-artist override for the directory only (album stays
     together under one artist folder while track artist tags stay true).
     """
+    if SKIP_EXISTING:
+        have = library.find(pick.get("artist"), pick.get("title"))
+        if have:
+            return _already(pick, query, have)
     local, attempts = _download_with_failover(pick)  # Path to downloaded audio
     meta = engine.meta(local, pick, query)
     if force_album:
@@ -172,12 +208,25 @@ def _download_one(pick: dict, query: str, album_hint: str = "",
 
     dest = target_path(meta, CFG["output"]["root"], local.suffix, dir_artist=dir_artist)
     album_dir = os.path.dirname(dest)
+    if SKIP_EXISTING:
+        # second check with the real tags: same song already in this album
+        # folder (or under this artist) -> keep the existing file
+        have = library.find(meta.get("artist"), meta.get("title"), album_dir=album_dir)
+        if have:
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+            return _already(pick, query, have)
     os.makedirs(album_dir, exist_ok=True)
     # staging lives on / (root fs) while the library is on /mnt/hdd — different
     # devices, so os.replace would raise EXDEV. shutil.move copies across mounts.
     shutil.move(str(local), dest)
     post.apply(dest, meta, lyrics, cover)
     post.write_folder_jpg(album_dir, cover)
+    library.add(dest)
+    plex.request_scan(album_dir)  # Plexamp: refresh just this album folder
+    navidrome.request_scan()      # Navidrome: one debounced scan per batch
 
     return {
         "query": query,
@@ -191,10 +240,17 @@ def _download_one(pick: dict, query: str, album_hint: str = "",
     }
 
 
+def _already(pick: dict, query: str, path: str) -> dict:
+    return {"query": query, "picked": pick, "output": path, "skipped": True,
+            "format": os.path.splitext(path)[1], "meta": {}, "attempts": []}
+
+
 def run_job(payload: dict) -> dict:
     kind = payload.get("kind")
     if kind == "search":
         cands = engine.search(payload["query"])
+        if not egress.jiosaavn_ok():
+            cands = [c for c in cands if c.get("source") != "jiosaavn"]
         if not cands:
             raise EngineError(f"no results for: {payload['query']}")
         return {"candidates": cands, "count": len(cands)}
@@ -205,6 +261,11 @@ def run_job(payload: dict) -> dict:
             pick = ytm.video_pick(d["id"])
             return {"kind": "track", "source": "youtube",
                     "name": pick.get("title") or d["id"], "pick": pick}
+        if payload.get("light") and not (d["kind"] == "track" and len(pl["tracks"]) == 1):
+            # quick answer for the bot: what is this link? (matching every
+            # track here would double the work of the playlist job)
+            return {"kind": d["kind"], "source": d["source"], "name": pl["name"],
+                    "total": len(pl["tracks"]), "limited": pl.get("limited")}
         for t in pl["tracks"]:
             t["pick"] = match_with_rescue(ytm, t,
                                           authoritative_duration=(d["source"] == "spotify"),
@@ -242,9 +303,24 @@ def run_job(payload: dict) -> dict:
             counts = Counter(t.get("artist") for t in pl["tracks"] if t.get("artist"))
             if counts:
                 dir_artist = counts.most_common(1)[0][0]
-        outputs, errors = [], []
+        outputs, errors, skipped = [], [], []
         jio = _jio_engine()
+        n = len(pl["tracks"])
+
+        def progress(i, current=""):
+            queue.set_progress({"name": pl["name"], "total": n, "done": i,
+                                "downloaded": len(outputs), "skipped": len(skipped),
+                                "failed": len(errors), "current": current})
+
+        progress(0)
         for i, t in enumerate(pl["tracks"], 1):
+            label = f"{t.get('artist', '')} - {t.get('title', '')}"
+            progress(i - 1, label)
+            if SKIP_EXISTING and not t.get("pick"):
+                have = library.find(t.get("artist"), t.get("title"))
+                if have:
+                    skipped.append({"track": label, "output": have})
+                    continue
             pick = t.get("pick") or match_with_rescue(ytm, t,
                                                        authoritative_duration=(d["source"] == "spotify"),
                                                        jio=jio)
@@ -265,18 +341,23 @@ def run_job(payload: dict) -> dict:
                                     album_hint=hint, force_album=force,
                                     tracknumber=t.get("tracknumber") or i,
                                     dir_artist=dir_artist)
-                outputs.append(out)
+                if out.get("skipped"):
+                    skipped.append({"track": label, "output": out["output"]})
+                else:
+                    outputs.append(out)
             except Exception as exc:  # one bad track must not kill the dump
                 errors.append({"track": f"{t['artist']} - {t['title']}", "error": str(exc)})
+        progress(n)
         return {"name": pl["name"], "total": len(pl["tracks"]),
-                "downloaded": len(outputs), "errors": errors, "outputs": outputs}
+                "downloaded": len(outputs), "errors": errors, "outputs": outputs,
+                "skipped": skipped, "limited": pl.get("limited")}
 
     # download + post-process
     return _download_one(payload["pick"], payload.get("query", ""))
 
 
 queue = Queue(run_job)
-app = FastAPI(title="MusicFetch", version="0.1")
+app = FastAPI(title="Musicfetcherr", version="0.1")
 
 
 def _check_api_key(x_api_key: str | None):
@@ -295,6 +376,7 @@ class DownloadReq(BaseModel):
 
 class UrlReq(BaseModel):
     url: str
+    light: bool = False  # resolve only: albums/playlists return name + count, no per-track matching
 
 
 @app.get("/health")
@@ -325,7 +407,7 @@ def api_resolve(req: UrlReq, x_api_key: str | None = Header(None)):
     _check_api_key(x_api_key)
     if not req.url.strip():
         raise HTTPException(400, "url required")
-    job_id = queue.submit({"kind": "resolve", "url": req.url.strip()})
+    job_id = queue.submit({"kind": "resolve", "url": req.url.strip(), "light": req.light})
     return {"job_id": job_id, "status": "queued"}
 
 

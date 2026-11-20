@@ -1,4 +1,4 @@
-"""In-process job queue for MusicFetch. Serial execution (slskd allows one
+"""In-process job queue for Musicfetcherr. Serial execution (slskd allows one
 concurrent search; downloads run one at a time for v1 politeness)."""
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ class Queue:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._busy = False
+        self._current: dict | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -38,6 +39,13 @@ class Queue:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
+    def set_progress(self, progress: dict) -> None:
+        """Called by the worker to report progress on the job it's running."""
+        with self._lock:
+            if self._current is not None:
+                self._current["progress"] = dict(progress)
+                self._current["updated"] = time.time()
+
     def all(self) -> list[dict]:
         with self._lock:
             return [dict(j) for j in self._jobs.values()]
@@ -56,6 +64,7 @@ class Queue:
                     job = next((j for j in self._jobs.values() if j["status"] == "queued"), None)
                 self._busy = True
                 job["status"] = "running"
+                self._current = job
             try:
                 result = self.worker(job["payload"])
                 with self._lock:
@@ -68,5 +77,6 @@ class Queue:
             finally:
                 with self._lock:
                     job["updated"] = time.time()
+                    self._current = None
                     self._busy = False
                     self._cond.notify()

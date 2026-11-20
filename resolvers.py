@@ -1,4 +1,4 @@
-"""URL resolvers — turn pasted links into track lists for MusicFetch.
+"""URL resolvers — turn pasted links into track lists for Musicfetcherr.
 
 YouTube / YouTube Music:
   single links (watch, youtu.be, shorts, music.youtube.com song) -> 1 track
@@ -139,6 +139,9 @@ def youtube_tracklist(playlist_url: str) -> dict:
 # --- spotify ------------------------------------------------------------
 
 
+_EMBED_LIMIT = 100  # Spotify's embed page never lists more than this
+
+
 class SpotifyError(Exception):
     """Embed-page fetch/parse failures for the Spotify resolver."""
 
@@ -152,8 +155,14 @@ _SPOTIFY_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 def _embed_entity(kind: str, sid: str) -> dict:
     url = f"https://open.spotify.com/embed/{kind}/{sid}"
     req = urllib.request.Request(url, headers={"User-Agent": _SPOTIFY_UA})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        html = r.read().decode("utf-8", "replace")
+    for attempt in (1, 2):  # one retry: slow links time out now and then
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                html = r.read().decode("utf-8", "replace")
+            break
+        except (TimeoutError, OSError):
+            if attempt == 2:
+                raise
     m = _EMBED_DATA.search(html)
     if not m:
         raise SpotifyError("embed page missing __NEXT_DATA__")
@@ -188,7 +197,11 @@ def spotify_tracklist(kind: str, sid: str) -> dict:
             "tracknumber": (i + 1) if kind == "album" else 0,
             "ref": (t.get("uri") or "").rsplit(":", 1)[-1] or t.get("id") or "",
         })
-    return {"name": name, "tracks": tracks}
+    out = {"name": name, "tracks": tracks}
+    if kind == "playlist" and len(tracks) >= _EMBED_LIMIT:
+        # the embed page stops at 100: the playlist is probably longer
+        out["limited"] = _EMBED_LIMIT
+    return out
 
 
 # --- matching -----------------------------------------------------------

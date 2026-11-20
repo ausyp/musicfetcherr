@@ -1,4 +1,4 @@
-"""Filename/path sanitization + Jellyfin layout for MusicFetch.
+"""Filename/path sanitization + Jellyfin layout for Musicfetcherr.
 
 Library convention (Adi's): {Artist}/{Album}/{Song}.flac
 Multi-artist: kept as "Artist A; Artist B" (the ';' separator is the
@@ -30,8 +30,11 @@ def target_path(meta: dict, output_root: str, ext: str = ".flac",
     downloads: all tracks of an album live under the album artist's folder
     while each track keeps its own artist tag).
     """
+    from library import match_dir  # reuse "Album (OST)" for "Album", "R.E.M." for "R. E. M."
     artist = sanitize_component(dir_artist or meta.get("artist") or "Unknown Artist")
+    artist = match_dir(output_root, artist)
     album = sanitize_component(meta.get("album") or meta.get("unknown_album") or "Unknown Album")
+    album = match_dir(f"{output_root}/{artist}", album)
     title = sanitize_component(meta.get("title") or "Unknown Title")
     ext = ext.lower() if ext.startswith(".") else f".{ext.lower()}"
 

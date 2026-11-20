@@ -146,7 +146,7 @@ def read_m4a_tags(path: str) -> dict:
 class PostProcessor:
     def __init__(self, cfg: dict, ua: str | None = None):
         self.ua = ua or cfg.get("postprocess", {}).get(
-            "musicbrainz_ua", "MusicFetch/0.1 (local service)"
+            "musicbrainz_ua", "Musicfetcherr/0.1 (local service)"
         )
         self.do_mb = cfg.get("postprocess", {}).get("musicbrainz", True)
         self.do_lyrics = cfg.get("postprocess", {}).get("lyrics", True)

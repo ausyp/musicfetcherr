@@ -1,4 +1,4 @@
-# MusicFetch configuration
+# Musicfetcherr configuration
 # Copy to config.yaml and adjust. config.yaml is gitignored (it holds secrets).
 
 # Engine order = QUALITY PRIORITY. Search lists sources top-to-bottom in this
@@ -10,18 +10,18 @@
 
 jiosaavn:
   # scratch space during download, auto-created — safe to leave as-is
-  staging_dir: /opt/musicfetch/staging
+  staging_dir: /opt/musicfetcherr/staging
 
 youtube_music:
-  staging_dir: /opt/musicfetch/staging
+  staging_dir: /opt/musicfetcherr/staging
 
 qbit:
   # FLAC tier — lossless CD rips via local qBittorrent + public trackers.
   url: http://127.0.0.1:1340
   username: qbittorrent
   password: ""            # WebUI password (this file is the template; real one in gitignored config.yaml)
-  category: musicfetch
-  staging_dir: /opt/musicfetch/staging
+  category: musicfetcherr
+  staging_dir: /opt/musicfetcherr/staging
 
 engine:
   order: [qbit, jiosaavn, youtube_music]
@@ -38,7 +38,7 @@ postprocess:
   musicbrainz: true
   lyrics: true
   cover: true
-  musicbrainz_ua: "MusicFetch/0.1 ( https://github.com/AadiSPrabs )"
+  musicbrainz_ua: "Musicfetcherr/0.1 ( https://github.com/AadiSPrabs )"
 
 api:
   host: 127.0.0.1

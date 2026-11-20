@@ -1,4 +1,4 @@
-# MusicFetch REST API
+# Musicfetcherr REST API
 
 Base URL: `http://127.0.0.1:8090` (bind + port from `config.yaml → api`).
 

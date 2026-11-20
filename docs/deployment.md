@@ -1,6 +1,6 @@
 # Deployment
 
-MusicFetch runs as two long-lived processes:
+Musicfetcherr runs as two long-lived processes:
 
 1. **API** — uvicorn serving `api:app` on `127.0.0.1:8090`
 2. **Bot** — `tools/tgbot.py` long-polling Telegram
@@ -11,18 +11,18 @@ proxy (Caddy/nginx/Cloudflare Tunnel) if you want it reachable from outside.
 
 ## systemd units
 
-`/etc/systemd/system/musicfetch-api.service`:
+`/etc/systemd/system/musicfetcherr-api.service`:
 
 ```ini
 [Unit]
-Description=MusicFetch download API (uvicorn, 127.0.0.1:8090)
+Description=Musicfetcherr download API (uvicorn, 127.0.0.1:8090)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/musicfetch
-ExecStart=/opt/musicfetch/.venv/bin/uvicorn api:app --host 127.0.0.1 --port 8090
+WorkingDirectory=/opt/musicfetcherr
+ExecStart=/opt/musicfetcherr/.venv/bin/uvicorn api:app --host 127.0.0.1 --port 8090
 Restart=always
 RestartSec=5
 
@@ -30,18 +30,18 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-`/etc/systemd/system/musicfetch-bot.service`:
+`/etc/systemd/system/musicfetcherr-bot.service`:
 
 ```ini
 [Unit]
-Description=MusicFetch Telegram bot
-After=network-online.target musicfetch-api.service
+Description=Musicfetcherr Telegram bot
+After=network-online.target musicfetcherr-api.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/musicfetch
-ExecStart=/opt/musicfetch/.venv/bin/python tools/tgbot.py
+WorkingDirectory=/opt/musicfetcherr
+ExecStart=/opt/musicfetcherr/.venv/bin/python tools/tgbot.py
 Restart=always
 RestartSec=5
 
@@ -53,17 +53,17 @@ Install and enable:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now musicfetch-api musicfetch-bot
-sudo systemctl status musicfetch-api musicfetch-bot
+sudo systemctl enable --now musicfetcherr-api musicfetcherr-bot
+sudo systemctl status musicfetcherr-api musicfetcherr-bot
 ```
 
-The bot unit declares `After=musicfetch-api.service` so it doesn't race the
+The bot unit declares `After=musicfetcherr-api.service` so it doesn't race the
 API on boot.
 
 ## Directory layout (this install)
 
 ```
-/opt/musicfetch/          # the repo
+/opt/musicfetcherr/          # the repo
 ├── config.yaml           # real config (gitignored; start from config.example.yaml)
 ├── staging/              # engine download scratch space (gitignored)
 └── .venv/                # virtualenv (gitignored)
@@ -96,7 +96,7 @@ stdlib for transport (urllib long-poll) — no bot framework needed.
   this is a non-issue in practice.
 - **Source liveness changes monthly** — JioSaavn/YouTube endpoints can
   break without warning. If downloads start failing, check
-  `journalctl -u musicfetch-api -f` first; the engines log the failure
+  `journalctl -u musicfetcherr-api -f` first; the engines log the failure
   stage (search vs download vs which quality/player client).
 - **`config.yaml` contains secrets** (bot token, optional API key). It is
   gitignored — never commit it.

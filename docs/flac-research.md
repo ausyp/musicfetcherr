@@ -1,4 +1,4 @@
-|# MusicFetch — FLAC research round 2 (2026-08-22, live-probed)
+|# Musicfetcherr — FLAC research round 2 (2026-08-22, live-probed)
 
 **Verdict up front: the torrent route works on this box. End-to-end proven today.**
 

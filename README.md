@@ -1,4 +1,21 @@
-# MusicFetch — self-hosted music downloader
+# Musicfetcherr
+
+**Telegram → download → Plexamp / Navidrome.** Send a Spotify, YouTube or
+YouTube Music link to your Telegram bot; the song is downloaded (JioSaavn
+320 kbps or YouTube Music), tagged, filed as `Artist/Album/Song.m4a`, and your
+Plex and/or existing Navidrome server rescans so it shows up in Plexamp or
+Subsonic apps. Runs as a 2-container Portainer stack, with downloads
+routed through an India Tailscale exit node and automatic fallback to your
+normal connection.
+
+**→ Setup guide: [docs/SETUP.md](docs/SETUP.md)**
+
+Based on [MusicFetch](https://github.com/AadiSPrabs/MusicFetch) by AadiSPrabs.
+The sections below describe the downloader itself (originally MusicFetch).
+
+---
+
+## The downloader
 
 Search, download, tag, and organize **single songs — or entire albums and
 playlists** — into a Jellyfin-ready library, controlled from **Telegram** and
@@ -23,7 +40,7 @@ when a lossless rip is used) with proper metadata, embedded cover art, and lyric
 
 ## What it is
 
-MusicFetch is a Lidarr-style service: **any track — a single song or a whole
+Musicfetcherr is a Lidarr-style service: **any track — a single song or a whole
 album/playlist — downloaded in full, tagged correctly, filed correctly.**
 
 - **Three-tier, quality-priority search** — `engine.order` (edit in
@@ -32,10 +49,10 @@ album/playlist — downloaded in full, tagged correctly, filed correctly.**
   (320 kbps AAC, no auth) → **YouTube Music** (yt-dlp, ~128 kbps AAC). All
   sources are merged into one list; each candidate is tagged with its source
   + quality and downloads route automatically. If a lossy source **fails** to
-  download, MusicFetch **fails over to a higher-quality tier** automatically —
+  download, Musicfetcherr **fails over to a higher-quality tier** automatically —
   see [docs/engines.md](docs/engines.md).
 - **Paste-a-link ingestion** — drop in a YouTube, YouTube Music, or Spotify
-  link (single track, album, or playlist) and MusicFetch resolves it, matches
+  link (single track, album, or playlist) and Musicfetcherr resolves it, matches
   every track to the clean studio version, and downloads everything.
 - **Real metadata pipeline** — MusicBrainz (artist/album/track/year), LRCLIB
   (synced + plain lyrics, embedded + `.lrc` sidecar), cover art (embedded +
@@ -54,7 +71,7 @@ album/playlist — downloaded in full, tagged correctly, filed correctly.**
 ## What it's made of
 
 ```
-musicfetch/
+musicfetcherr/
 ├── api.py              # FastAPI REST service + job orchestration
 ├── jobqueue.py         # in-process serial job queue (search/download/resolve)
 ├── naming.py           # {Artist}/{Album}/{Song}.m4a path + collision handling
@@ -78,8 +95,8 @@ with no extra moving parts. See [docs/architecture](docs/) for details.
 ## Installation
 
 ```bash
-git clone https://github.com/AadiSPrabs/MusicFetch.git
-cd MusicFetch
+git clone https://github.com/<your-user>/musicfetcherr.git
+cd musicfetcherr
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -176,7 +193,7 @@ go, at the best available tier, with failover.
 ### REST API (no bot needed)
 
 The bot is just a front-end — everything it does is one HTTP call away, so
-you can drive MusicFetch from `curl`, scripts, cron jobs, or your own app
+you can drive Musicfetcherr from `curl`, scripts, cron jobs, or your own app
 (Jellyfin clients, web UIs, whatever):
 
 ```bash

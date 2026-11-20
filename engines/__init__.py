@@ -1,4 +1,4 @@
-"""Engine registry for MusicFetch. Engines are source-pluggable:
+"""Engine registry for Musicfetcherr. Engines are source-pluggable:
 jiosaavn (primary, 320kbps AAC) and youtube_music (fallback, ~128kbps AAC).
 cfg['engine']['order'] controls search merge order and download routing.
 """

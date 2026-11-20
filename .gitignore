@@ -9,3 +9,6 @@ staging/
 
 # stale internal research notes (superseded by docs/)
 PLAN.md
+
+# docker / portainer
+stack.env

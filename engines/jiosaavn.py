@@ -64,9 +64,17 @@ class JioSaavnEngine:
 
     def __init__(self, cfg: dict):
         d = cfg.get("jiosaavn") or {}
-        self.staging = Path(d.get("staging_dir") or "/root/musicfetch/staging") / "jiosaavn"
+        self.staging = Path(d.get("staging_dir") or "/root/musicfetcherr/staging") / "jiosaavn"
         self.staging.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
+        # Retry timeouts/connection drops: traffic goes via the India exit node,
+        # which can be a slow relayed link.
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        retry = Retry(total=3, connect=3, read=2, backoff_factor=2,
+                      status_forcelist=(502, 503, 504), allowed_methods=("GET",))
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+        self.session.mount("http://", HTTPAdapter(max_retries=retry))
         self.session.headers["User-Agent"] = _UA
 
     # -- API ------------------------------------------------------------
@@ -74,7 +82,7 @@ class JioSaavnEngine:
         params.setdefault("_format", "json")
         params.setdefault("_marker", 0)
         params.setdefault("api_version", 4)
-        resp = self.session.get(_API, params={"__call": call, **params}, timeout=20)
+        resp = self.session.get(_API, params={"__call": call, **params}, timeout=45)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and data.get("error"):

@@ -41,7 +41,7 @@ class YoutubeMusicEngine:
 
     def __init__(self, cfg: dict):
         d = cfg.get("youtube_music") or {}
-        self.staging = Path(d.get("staging_dir") or "/root/musicfetch/staging") / "ytmusic"
+        self.staging = Path(d.get("staging_dir") or "/root/musicfetcherr/staging") / "ytmusic"
         self.staging.mkdir(parents=True, exist_ok=True)
 
     # -- helpers --------------------------------------------------------

@@ -1,0 +1,89 @@
+# Musicfetcherr — Portainer stack (2 containers)
+#
+#   tailscale     : connects to your India exit node
+#   musicfetcherr : Telegram bot + downloader + exit-node watchdog,
+#                   sharing tailscale's network. Saves into MUSIC_PATH, then
+#                   tells Plex and/or your existing Navidrome to rescan.
+#
+# Saving to an existing Docker volume (e.g. an SMB share)? Use
+# docker-compose.volume.yml instead.
+#
+# Portainer → Stacks → Add stack → Repository → this repo, compose path
+# `docker-compose.yml`, then paste stack.env.example into Environment variables.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: musicfetcherr-tailscale
+    hostname: musicfetcherr
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: musicfetcherr
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+      # No TUN device needed (works in Proxmox LXC, Synology, etc.): Tailscale
+      # runs as a proxy on 127.0.0.1:1055 and the app sends its traffic through
+      # it, which goes out via the India exit node.
+      TS_USERSPACE: "true"
+      TS_SOCKS5_SERVER: 127.0.0.1:1055
+      TS_OUTBOUND_HTTP_PROXY_LISTEN: 127.0.0.1:1055
+      TS_EXTRA_ARGS: --exit-node=${TS_EXIT_NODE} --exit-node-allow-lan-access=true
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - tailscale-sock:/var/run/tailscale
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach Plex/Navidrome on this host directly
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9002/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  musicfetcherr:
+    build: .
+    image: musicfetcherr:latest
+    pull_policy: build   # built from this repo on every deploy; never pulled from Docker Hub
+    container_name: musicfetcherr
+    network_mode: service:tailscale
+    environment:
+      TS_EXIT_NODE: ${TS_EXIT_NODE}
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+      # Internet traffic -> Tailscale proxy -> India exit node.
+      # Direct (no India needed): local/home network (Plex, Navidrome), Telegram,
+      # Spotify link lookups, MusicBrainz, cover art, lyrics.
+      HTTP_PROXY: http://127.0.0.1:1055
+      HTTPS_PROXY: http://127.0.0.1:1055
+      http_proxy: http://127.0.0.1:1055
+      https_proxy: http://127.0.0.1:1055
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,api.telegram.org,open.spotify.com,musicbrainz.org,coverartarchive.org,lrclib.net,pypi.org,files.pythonhosted.org,${NO_PROXY_EXTRA:-}
+      no_proxy: localhost,127.0.0.1,host.docker.internal,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,api.telegram.org,open.spotify.com,musicbrainz.org,coverartarchive.org,lrclib.net,pypi.org,files.pythonhosted.org,${NO_PROXY_EXTRA:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      PLEX_URL: ${PLEX_URL:-http://host.docker.internal:32400}
+      PLEX_MUSIC_PATH: ${PLEX_MUSIC_PATH:-}
+      NAVIDROME_URL: ${NAVIDROME_URL:-}
+      NAVIDROME_USER: ${NAVIDROME_USER:-}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD:-}
+      EXIT_NODE_FALLBACK: ${EXIT_NODE_FALLBACK:-true}
+      JIOSAAVN_WHEN_FALLBACK: ${JIOSAAVN_WHEN_FALLBACK:-false}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ${MUSIC_PATH:-/srv/music}:/music
+      - musicfetcherr-data:/data
+      - tailscale-sock:/var/run/tailscale
+    depends_on:
+      tailscale:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  tailscale-sock:
+  musicfetcherr-data:
