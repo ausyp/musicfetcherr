@@ -84,10 +84,7 @@ def _qbit_engine():
 
 
 def _jio_engine():
-    """JioSaavn engine (rescuer for Spotify tracks with no YT match).
-    None while on the fallback connection — JioSaavn needs an Indian IP."""
-    if not egress.jiosaavn_ok():
-        return None
+    """JioSaavn engine for finding Spotify tracks with no YouTube Music match."""
     engs = engine.engines if isinstance(engine, MultiEngine) else [engine]
     for e in engs:
         if getattr(e, "name", None) == "jiosaavn":
@@ -114,9 +111,11 @@ def _download_with_failover(pick: dict) -> tuple:
     src = pick.get("source")
     skipped = False
     try:
-        if src == "jiosaavn" and not egress.jiosaavn_ok():
-            skipped = True
-            raise EngineError(f"India exit node unavailable (egress: {egress.country() or '?'})")
+        if src == "jiosaavn":
+            reason = egress.jiosaavn_skip_reason()
+            if reason:
+                skipped = True
+                raise EngineError(reason)
         local = engine.download(pick)
         attempts.append({"source": src, "status": "ok"})
         return local, attempts
@@ -263,8 +262,6 @@ def run_job(payload: dict) -> dict:
     kind = payload.get("kind")
     if kind == "search":
         cands = engine.search(payload["query"])
-        if not egress.jiosaavn_ok():
-            cands = [c for c in cands if c.get("source") != "jiosaavn"]
         if not cands:
             raise EngineError(f"no results for: {payload['query']}")
         return {"candidates": cands, "count": len(cands)}

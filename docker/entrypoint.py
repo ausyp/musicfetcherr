@@ -3,17 +3,13 @@
 
 1. Builds config.yaml from environment variables (so the whole thing is
    configured from Portainer's stack environment variables).
-2. Optional egress check: if REQUIRE_COUNTRY is set (e.g. IN), waits until the
-   public IP geolocates to that country, so nothing ever talks to JioSaavn
-   from the wrong country if the Tailscale exit node is down.
-3. Starts the watchdog, the API and the Telegram bot, and supervises them.
+2. Starts the watchdog, the API and the Telegram bot, and supervises them.
 """
 import os
 import signal
 import subprocess
 import sys
 import time
-import urllib.request
 
 import yaml
 
@@ -73,38 +69,6 @@ def build_config() -> dict:
     }
 
 
-def country() -> str:
-    for url in ("https://ipinfo.io/country", "https://ifconfig.co/country-iso"):
-        try:
-            with urllib.request.urlopen(url, timeout=10) as r:
-                c = r.read().decode().strip().upper()
-                if len(c) == 2:
-                    return c
-        except Exception:
-            continue
-    return ""
-
-
-def wait_for_country(want: str, fallback: bool) -> None:
-    # With fallback ON we only wait a little: if India isn't there, the
-    # watchdog switches to the local connection and we start anyway.
-    tries = max(1, int(env("EGRESS_WAIT_SECONDS", "180")) // 5) if fallback else 60
-    got = ""
-    for attempt in range(tries):
-        got = country()
-        if got == want:
-            print(f"[entrypoint] egress country {got} OK", flush=True)
-            return
-        print(f"[entrypoint] egress country is {got or 'unknown'}, want {want} - "
-              f"waiting for Tailscale exit node ({attempt + 1}/{tries})", flush=True)
-        time.sleep(5)
-    if fallback:
-        print(f"[entrypoint] India exit node not available - starting on fallback "
-              f"connection ({got or 'unknown'}); JioSaavn paused", flush=True)
-        return
-    sys.exit(f"[entrypoint] egress never reached {want} and EXIT_NODE_FALLBACK=false; refusing to start")
-
-
 def write_config(uid: int, gid: int) -> None:
     os.makedirs(os.path.dirname(CFG_PATH), exist_ok=True)
     with open(CFG_PATH, "w", encoding="utf-8") as fh:
@@ -162,8 +126,7 @@ def update_ytdlp() -> None:
 
 def main():
     """Runs everything in one container:
-      watchdog (root, needs the tailscaled socket) -> starts first so it can
-      fall back to the local connection while we wait for India,
+      watchdog (root, needs the tailscaled socket) -> manages exit-node routing,
       api + bot (as PUID:PGID so music files are owned by you).
     If any process dies, everything stops and Docker restarts the container."""
     uid, gid = int(env("PUID", "1000")), int(env("PGID", "1000"))
@@ -185,9 +148,6 @@ def main():
 
     if env("TS_EXIT_NODE"):
         procs["watchdog"] = subprocess.Popen(["python", "/app/docker/watchdog.py"])
-
-    if env("SKIP_EGRESS_CHECK", "false").lower() != "true":
-        wait_for_country(preferred_country(), env("EXIT_NODE_FALLBACK", "true").lower() == "true")
 
     procs["api"] = subprocess.Popen(
         ["uvicorn", "api:app", "--host", "127.0.0.1", "--port", env("API_PORT", "8090")],

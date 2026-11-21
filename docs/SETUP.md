@@ -150,15 +150,14 @@ TZ=Etc/UTC
 1. **Logs.** Portainer → *Containers → musicfetcherr → Logs*. Within a minute or two you should see:
    - `[entrypoint] music folder /music… is writable`
    - `[entrypoint] yt-dlp up to date (…)`
-   - `[watchdog] watching exit node 100.x.y.z (preferred IN, fallback ON, every 30s)`
-   - `[entrypoint] egress country IN OK`
+   - `[watchdog] watching exit node 100.x.y.z (fallback ON, every 30s)`
    - `Uvicorn running on http://127.0.0.1:8090`
    - `bot online: @your_bot`
-2. **India routing.** In the *musicfetcherr* console, `python -c "import egress;print(egress.lookup_country())"` should print `IN`.
+2. **India routing.** Musicfetcherr verifies the public IP country when it is about to download from JioSaavn. The bot includes any routing issue in the download result. Tailscale still checks whether the exit node responds so it can switch connections automatically. Those route changes appear in the container logs.
 3. **First download.** Send the bot a song link from Spotify or YouTube Music. It offers source buttons such as `[JS 320]` and `[YT 128]`; pick JS 320.
 4. **File check.** The bot replies with the file, and it appears in your music folder as `Artist/Album/Song.m4a`.
 5. **Players.** The log shows `plex refresh started` / `navidrome scan started` if those are set up. Within a minute the song appears in Plexamp (Recently Added) or your Navidrome app.
-6. **Test the fallback (optional).** Stop Tailscale on the exit node for ~3 minutes. The bot should message ⚠️, and a new search shows only `[YT 128]` results. Start it again; within ~1 minute the bot messages 🇮🇳.
+6. **Test the fallback (optional).** Stop Tailscale on the exit node for about three minutes. Check the container logs for the switch to your normal connection. A JioSaavn download should report that it was skipped and show the YouTube Music fallback outcome. Restart the exit node and check the logs for recovery.
 
 ## Faster downloads: a direct connection
 
@@ -221,7 +220,7 @@ Tailscale connects your server to the exit node directly when it can. When it ca
 | Problem | Likely cause | Fix |
 | --- | --- | --- |
 | `musicfetcherr-tailscale` never turns healthy | Bad or expired `TS_AUTHKEY` | New reusable key; redeploy |
-| Log repeats `egress country is XX … waiting` | Exit node offline, not approved, or blocked by access rules | Step 2.1 and 2.3; with fallback on it starts on your normal connection after ~3 minutes |
+| JioSaavn reports a non-India connection or an unverified country | Exit node is unavailable, or the country lookup failed | Check the exit-node logs and Step 2.1 and 2.3 |
 | `bot exited … restarting container` | Wrong `TELEGRAM_BOT_TOKEN` | Copy the token again from @BotFather |
 | Bot replies "Not authorized" | Your chat ID isn't in `TELEGRAM_ALLOWED_CHATS` | Add it and update the stack |
 | Bot says `The read operation timed out`, downloads slow | Connection to the exit node is relayed (`via DERP`) | [Faster downloads](#faster-downloads-a-direct-connection) |
