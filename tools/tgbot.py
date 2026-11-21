@@ -360,7 +360,10 @@ def failure_reason(error, limit: int = 240) -> str:
 
 
 def fmt_attempts(attempts, limit: int = 240) -> str:
-    names = {"jiosaavn": "JioSaavn", "youtube_music": "YouTube Music", "qbit": "FLAC (qBittorrent)"}
+    names = {
+        "jiosaavn": "JioSaavn", "youtube_music": "YouTube Music",
+        "youtube_original": "Original YouTube video", "qbit": "FLAC (qBittorrent)",
+    }
     lines = []
     for attempt in attempts or []:
         source = str(attempt.get("source") or "Unknown source")
