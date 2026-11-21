@@ -506,6 +506,8 @@ def flow_download(chat: int, n: int):
         say(chat, "❌ no search results in this chat — search first")
         return
     opts = list(((_alts.get(chat) or {}).get(n) or {}).values())
+    priority = {"jiosaavn": 0, "youtube_music": 1}
+    opts.sort(key=lambda c: priority.get(c.get("source"), 2))
     if len(opts) < 2:  # single source — nothing to choose, don't add a tap
         _do_download(chat, pick)
         return
@@ -605,7 +607,9 @@ def offer_link_quality(chat: int, url: str, pick: dict):
         groups, _ = _cluster(cands)
         hit = next((g for g in groups if any(_same_track(c, pick) for c in g.values())), None)
         opts = dict(hit or {})
-    opts[str(pick.get("source") or "link")] = pick  # the link's own source wins
+    opts[str(pick.get("source") or "link")] = pick  # preserve the linked version
+    priority = {"jiosaavn": 0, "youtube_music": 1}
+    opts = dict(sorted(opts.items(), key=lambda item: priority.get(item[0], 2)))
     if len(opts) < 2:  # nothing to choose — download the link as before
         _link_download(chat, url, cancellable=False)
         return

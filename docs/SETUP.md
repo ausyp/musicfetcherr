@@ -135,8 +135,8 @@ same Docker host must listen on a published or host-reachable port for
    and look for the saved file under `Artist/Album/Title.m4a` or `.flac`.
 4. If a media server is configured, verify the file appears in its music library.
 
-YouTube playlists try JioSaavn, then YouTube Music, then the original YouTube
-video. The bot reports the source of each saved track and gives failed tracks
+Spotify and YouTube links and playlists try JioSaavn first, then YouTube Music.
+YouTube lists can also fall back to the original video. The bot reports the source of each saved track and gives failed tracks
 a **Search YouTube** link. Entries labelled as full movies are skipped. Songs
 already recognised in the library are reported as **already had**. For details,
 see [sources and matching](engines.md).

@@ -14,12 +14,18 @@ qBittorrent is optional. See [qBittorrent setup](flac-research.md).
 
 ## Playlist matching and fallback
 
-For YouTube playlists, an enabled JioSaavn source is tried first. The matcher
+For Spotify and YouTube links, albums, and playlists, an enabled JioSaavn source is tried first. The matcher
 uses the song title rather than the uploader name. It recognises some upload
 credits such as “song from” and Music Mojo credits. When present, song-artist
 metadata and a duration within 45 seconds help identify the recording. Titles
 are normalised for case and punctuation. Different spellings or transliterations
-can still prevent a match.
+can still prevent a match. Searches progressively use title with the supplied
+artists, primary artist, album when available, and title alone. Candidate
+titles lose soundtrack and featured-artist credits before comparison. A small
+spelling variation is accepted only with a matching artist and duration within
+10 seconds. Live, remix, and other version markers must agree. Search and source
+buttons put JioSaavn before YouTube Music. An explicit source selection uses
+the chosen source.
 
 If JioSaavn cannot match or download the song, Musicfetcherr tries YouTube
 Music. That matcher also considers artist, title, duration, and version markers
@@ -31,8 +37,8 @@ to submit the list. A seeded YouTube Mix may return different tracks for
 different sessions.
 
 Spotify links provide track, artist, album, and duration information for
-matching. Musicfetcherr tries YouTube Music for the matched recording and can
-try JioSaavn when no suitable match is found. The public Spotify playlist
+matching. Musicfetcherr searches JioSaavn first and uses YouTube Music when
+JioSaavn cannot match or deliver the recording. The public Spotify playlist
 view exposes up to 100 entries to the app.
 
 Single-track downloads try the selected source first. qBittorrent can also be
