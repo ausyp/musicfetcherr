@@ -14,9 +14,8 @@ Spotify (track / album / playlist):
   serves plain HTML to any client. Durations are authoritative (Spotify
   album masters) and drive the min-diff pick in match().
 
-Every resolved track is matched back to the YT Music engine (art-track
-search) so playlist downloads always land the clean, full-length studio
-version instead of whatever video the playlist points to. For Spotify
+Playlist downloads look for a clean studio track first. YouTube playlist
+entries can fall back to the original video. For Spotify
 references the album duration is authoritative and drives a min-diff pick;
 for YouTube playlist entries the entry durations are unreliable (CLiPs,
 edits, TV sizes) so the top search hit wins.
@@ -109,10 +108,19 @@ def _clean_title(title: str) -> str:
     return re.sub(r"\s{2,}", " ", t).strip()
 
 
+_FULL_MOVIE_TITLE = re.compile(r"\bfull[ -]+(?:length[ -]+)?(?:movie|film)\b", re.IGNORECASE)
+
+
 def youtube_tracklist(playlist_url: str) -> dict:
     """yt-dlp flat extraction of a playlist/album URL -> {name, tracks}."""
     opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
             "skip_download": True}
+    list_match = _YT_LIST_PARAM.search(playlist_url)
+    if (list_match and "/playlist" in playlist_url.split("?", 1)[0]
+            and re.fullmatch(r"RD[A-Za-z0-9_-]{11}", list_match.group(1))):
+        mix_id = list_match.group(1)
+        playlist_url = f"https://www.youtube.com/watch?v={mix_id[2:]}&list={mix_id}"
+        opts["noplaylist"] = False
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
     entries = [
@@ -122,7 +130,8 @@ def youtube_tracklist(playlist_url: str) -> dict:
     tracks = []
     for e in entries:
         artist = _clean_channel(e.get("channel") or e.get("uploader") or "")
-        title = _clean_title(e.get("title") or "")
+        video_title = e.get("title") or ""
+        title = _clean_title(video_title)
         # CLiP titles often lead with the artist name ("LiSA "Makotoshiyaka"")
         # — strip it so the search query is "LiSA Makotoshiyaka", not the
         # doubled "LiSA LiSA ..." that drifts the top-6 ranking.
@@ -134,6 +143,7 @@ def youtube_tracklist(playlist_url: str) -> dict:
             "title": title,
             "duration": int(e.get("duration") or 0),
             "ref": e.get("id"),
+            "full_movie": bool(_FULL_MOVIE_TITLE.search(video_title)),
         })
     return {"name": info.get("title") or "Playlist", "tracks": tracks}
 

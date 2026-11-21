@@ -123,13 +123,13 @@ yt-dlp against `music.youtube.com`'s song catalog:
 
 ## Link ingestion (`resolvers.py`)
 
-Pasted links are classified, resolved to track lists, then **re-matched to
-the clean YT Music art track** — playlist videos are never downloaded raw
-(because YouTube album auto-playlists mix in MUSiC CLiPs, TV-size edits,
-and covers). For YouTube playlists, Musicfetcherr also searches JioSaavn
-when YouTube Music cannot match or download a song. It looks for the same title
-and checks the duration when available. The uploader name does not have to match
-the recording artist.
+Pasted links are classified, resolved to track lists, then matched to a clean
+YT Music art track. For YouTube playlists, Musicfetcherr searches JioSaavn if
+YouTube Music cannot match or download a song. It checks the title and uses the
+duration when available, which helps when the uploader is a record label.
+When those sources fail, the bot tries the video ID from the playlist itself.
+That video can be a music clip, an edit, or a cover. Entries labelled as full
+movies are skipped.
 
 - **YouTube**: `watch`/`shorts`/`embed`/`live`/`youtu.be`/
   `music.youtube.com/song` → single track. `/playlist` or `OLAK5uy_` list id
