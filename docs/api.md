@@ -103,8 +103,8 @@ The `pick` is normally copied verbatim from a search candidate's result.
 source failed and a higher-quality tier grabbed it). `format` reflects what
 was actually delivered (`.m4a`, `.flac`, …). A failed download job includes
 `attempts` alongside its top-level `error`. For a playlist that finishes with
-failed tracks, individual entries in `result.errors` include `attempts` when a
-download was attempted. Attempt statuses include `ok`, `failed`, `no_match`,
+failed tracks, individual entries in `result.errors` include a `search_query`
+from the original track metadata and `attempts` when a download was attempted. Attempt statuses include `ok`, `failed`, `no_match`,
 and `skipped`.
 ```
 

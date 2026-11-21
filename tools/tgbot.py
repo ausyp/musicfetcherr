@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -376,6 +377,29 @@ def fmt_attempts(attempts, limit: int = 240) -> str:
     return "\n".join(lines)
 
 
+def playlist_failure_messages(errors: list[dict], job_id: str):
+    header = f"<b>Failed tracks</b> · Job <code>{html.escape(job_id)}</code>"
+    lines = [header]
+    size = len(header)
+    for i, error in enumerate(errors):
+        track = str(error.get("track") or "Unknown track")
+        query = str(error.get("search_query", error.get("track")) or "").strip() or track
+        query_params = urllib.parse.urlencode({"search_query": query[:240]})
+        url = f"https://www.youtube.com/results?{query_params}"
+        entry = f'❌ <b>{html.escape(track[:120])}</b> · <a href="{url}">Search YouTube</a>'
+        if i < 5:
+            detail = fmt_attempts(error.get("attempts"), limit=160) or failure_reason(error.get("error"))
+            entry += f"\n{detail}"
+        if len(lines) > 1 and size + 2 + len(entry) > 3800:
+            yield "\n\n".join(lines)
+            lines = [header]
+            size = len(header)
+        lines.append(entry)
+        size += 2 + len(entry)
+    if len(lines) > 1:
+        yield "\n\n".join(lines)
+
+
 def job_failure(job: dict, job_id: str, heading: str) -> str:
     attempts = fmt_attempts(job.get("attempts"))
     detail = attempts or failure_reason(job.get("error"))
@@ -625,16 +649,8 @@ def _link_download(chat: int, url: str):
     if errs:
         head += f"\n⚠️ {len(errs)} tracks failed. The playlist finished processing."
     say(chat, head)
-    if errs:
-        lines = []
-        for e in errs[:5]:
-            track = html.escape(str(e.get("track") or "Unknown track")[:120])
-            detail = fmt_attempts(e.get("attempts"), limit=160) or failure_reason(e.get("error"))
-            lines.append(f"❌ <b>{track}</b>\n{detail}")
-        if len(errs) > 5:
-            lines.append(f"Showing the first 5 of {len(errs)} failures.")
-        lines.append(f"Job <code>{html.escape(jid)}</code>")
-        say(chat, "\n\n".join(lines))
+    for message in playlist_failure_messages(errs, jid):
+        say(chat, message, link_preview_options={"is_disabled": True})
     recovered = [out for out in outs if len(out.get("attempts") or []) > 1]
     if recovered:
         lines = [f"↪️ <b>{len(recovered)} tracks downloaded using a fallback</b>"]

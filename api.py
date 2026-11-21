@@ -325,7 +325,10 @@ def run_job(payload: dict) -> dict:
 
         progress(0)
         for i, t in enumerate(pl["tracks"], 1):
-            label = f"{t.get('artist', '')} - {t.get('title', '')}"
+            artist, title = (t.get("artist") or "").strip(), (t.get("title") or "").strip()
+            query = " ".join(filter(None, (artist, title))) or t.get("ref") or ""
+            label = " - ".join(filter(None, (artist, title))) or query or f"Track {i}"
+            track_info = {"track": label, "search_query": query}
             progress(i - 1, label)
             if SKIP_EXISTING and not t.get("pick"):
                 have = library.find(t.get("artist"), t.get("title"))
@@ -336,9 +339,10 @@ def run_job(payload: dict) -> dict:
                 pick = t.get("pick") or match_with_rescue(
                     ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
             except Exception as exc:
-                raise EngineError(f"Track matching failed for {label}: {exc or type(exc).__name__}") from exc
+                errors.append({**track_info, "error": f"Track matching failed: {exc or type(exc).__name__}"})
+                continue
             if not pick:
-                errors.append({"track": label, "error": "No matching track found on YouTube Music"
+                errors.append({**track_info, "error": "No matching track found on YouTube Music"
                                + (" or JioSaavn" if d["source"] == "spotify" and jio else "")})
                 continue
             try:
@@ -360,9 +364,9 @@ def run_job(payload: dict) -> dict:
                 else:
                     outputs.append(out)
             except DownloadFailed as exc:
-                errors.append({"track": label, "error": str(exc), "attempts": exc.attempts})
+                errors.append({**track_info, "error": str(exc), "attempts": exc.attempts})
             except Exception as exc:
-                errors.append({"track": label, "error": str(exc) or type(exc).__name__})
+                errors.append({**track_info, "error": str(exc) or type(exc).__name__})
         progress(n)
         return {"name": pl["name"], "total": len(pl["tracks"]),
                 "downloaded": len(outputs), "errors": errors, "outputs": outputs,
