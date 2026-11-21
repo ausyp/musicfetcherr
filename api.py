@@ -37,7 +37,9 @@ from engines.youtube_music import YoutubeMusicEngine  # noqa: E402
 from naming import target_path  # noqa: E402
 from postprocess import PostProcessor  # noqa: E402
 from jobqueue import Queue  # noqa: E402
-from resolvers import detect, match, match_with_rescue, spotify_tracklist, youtube_tracklist  # noqa: E402
+from resolvers import (  # noqa: E402
+    detect, jiosaavn_youtube_match, match, match_with_rescue, spotify_tracklist, youtube_tracklist,
+)
 from plex import PlexScanner  # noqa: E402
 from navidrome import NavidromeScanner  # noqa: E402
 from egress import Egress  # noqa: E402
@@ -84,10 +86,7 @@ def _qbit_engine():
 
 
 def _jio_engine():
-    """JioSaavn engine (rescuer for Spotify tracks with no YT match).
-    None while on the fallback connection — JioSaavn needs an Indian IP."""
-    if not egress.jiosaavn_ok():
-        return None
+    """JioSaavn engine for playlist matching and download fallback."""
     engs = engine.engines if isinstance(engine, MultiEngine) else [engine]
     for e in engs:
         if getattr(e, "name", None) == "jiosaavn":
@@ -95,7 +94,14 @@ def _jio_engine():
     return None
 
 
-def _download_with_failover(pick: dict) -> tuple:
+class DownloadFailed(EngineError):
+    def __init__(self, reason: str, attempts: list[dict]):
+        super().__init__(reason)
+        self.attempts = attempts
+
+
+def _download_with_failover(pick: dict, *, jio_for_youtube=None,
+                            prior_attempts: list[dict] | None = None) -> tuple:
     """engine.download(pick); on failure automatically falls back to the qbit
     FLAC (torrent) tier. Returns (local_path, attempts_trail) — the trail lets
     the caller report exactly what happened (lossy fail -> FLAC fallback).
@@ -104,19 +110,23 @@ def _download_with_failover(pick: dict) -> tuple:
     locates the packed album on the torrent index, then matches the exact song
     file inside it by title AND verifies duration against the reference (±5s).
     """
-    attempts = []
+    attempts = list(prior_attempts or [])
     src = pick.get("source")
+    skipped = False
     try:
-        if src == "jiosaavn" and not egress.jiosaavn_ok():
-            raise EngineError(f"JioSaavn skipped: traffic is leaving from "
-                              f"{egress.country() or '?'} (India exit node unavailable)")
+        if src == "jiosaavn":
+            reason = egress.jiosaavn_skip_reason()
+            if reason:
+                skipped = True
+                raise EngineError(reason)
         local = engine.download(pick)
         attempts.append({"source": src, "status": "ok"})
         return local, attempts
     except Exception as exc:
-        attempts.append({"source": src, "status": "failed", "error": str(exc)})
+        attempts.append({"source": src, "status": "skipped" if skipped else "failed",
+                         "error": str(exc)})
         # JioSaavn (or any non-YT source) failed -> same song from YouTube Music.
-        if src != "youtube_music" and pick.get("title"):
+        if src != "youtube_music" and pick.get("title") and not prior_attempts:
             try:
                 yp = match(ytm, {"artist": pick.get("artist") or "",
                                  "title": pick.get("title") or "",
@@ -128,9 +138,28 @@ def _download_with_failover(pick: dict) -> tuple:
                     attempts.append({"source": "youtube_music", "status": "ok",
                                      "note": "YouTube Music fallback"})
                     return local, attempts
+                attempts.append({"source": "youtube_music", "status": "no_match",
+                                 "error": "No matching track found"})
             except Exception as yex:
                 attempts.append({"source": "youtube_music", "status": "failed",
                                  "error": str(yex)})
+        if src == "youtube_music" and jio_for_youtube is not None:
+            try:
+                jp = jiosaavn_youtube_match(jio_for_youtube, pick)
+                if jp is None:
+                    attempts.append({"source": "jiosaavn", "status": "no_match"})
+                else:
+                    reason = egress.jiosaavn_skip_reason()
+                    if reason:
+                        attempts.append({"source": "jiosaavn", "status": "skipped", "error": reason})
+                    else:
+                        local = engine.download(jp)
+                        pick.update(jp)
+                        attempts.append({"source": "jiosaavn", "status": "ok",
+                                         "note": "JioSaavn fallback"})
+                        return local, attempts
+            except Exception as jex:
+                attempts.append({"source": "jiosaavn", "status": "failed", "error": str(jex)})
         qbit = _qbit_engine()
         # Only attempt the FLAC fallback when we actually have a song identity
         # to search the torrent index with. An empty query (dead-video link,
@@ -159,12 +188,17 @@ def _download_with_failover(pick: dict) -> tuple:
             except Exception as fex:
                 attempts.append({"source": "qbit", "status": "failed",
                                  "error": str(fex)})
-        raise
+        elif src != "qbit":
+            attempts.append({"source": "qbit", "status": "skipped",
+                             "error": "FLAC fallback is not configured" if qbit is None else
+                             "Song title and artist are unavailable"})
+        raise DownloadFailed(str(exc) or type(exc).__name__, attempts) from exc
 
 
 def _download_one(pick: dict, query: str, album_hint: str = "",
                   tracknumber: int | None = None, force_album: str = "",
-                  dir_artist: str | None = None) -> dict:
+                  dir_artist: str | None = None, *, jio_for_youtube=None,
+                  prior_attempts: list[dict] | None = None) -> dict:
     """Download + post-process one pick. Shared by /api/download and the
     /api/playlist loop so both paths tag identically.
 
@@ -178,7 +212,8 @@ def _download_one(pick: dict, query: str, album_hint: str = "",
         have = library.find(pick.get("artist"), pick.get("title"))
         if have:
             return _already(pick, query, have)
-    local, attempts = _download_with_failover(pick)  # Path to downloaded audio
+    local, attempts = _download_with_failover(
+        pick, jio_for_youtube=jio_for_youtube, prior_attempts=prior_attempts)
     meta = engine.meta(local, pick, query)
     if force_album:
         meta["album"] = force_album
@@ -249,8 +284,6 @@ def run_job(payload: dict) -> dict:
     kind = payload.get("kind")
     if kind == "search":
         cands = engine.search(payload["query"])
-        if not egress.jiosaavn_ok():
-            cands = [c for c in cands if c.get("source") != "jiosaavn"]
         if not cands:
             raise EngineError(f"no results for: {payload['query']}")
         return {"candidates": cands, "count": len(cands)}
@@ -276,6 +309,8 @@ def run_job(payload: dict) -> dict:
 
     if kind == "playlist":
         d, pl = _resolve_url(payload["url"])
+        if queue.cancellation_requested():
+            return {}
         if d["kind"] == "track" and d["source"] == "youtube":
             # a single-link paste -> just download it. If the video's metadata
             # fetch failed (video removed/private/region-blocked), video_pick
@@ -283,12 +318,14 @@ def run_job(payload: dict) -> dict:
             # with, so fail clearly instead of a doomed download + pointless
             # FLAC attempt that surfaces the raw youtube error (2026-08-30).
             pick = ytm.video_pick(d["id"])
+            if queue.cancellation_requested():
+                return {}
             if not (pick.get("title") or "").strip():
                 raise EngineError(
                     "this YouTube video is unavailable (removed/private/"
                     "region-blocked) and no song title could be fetched — so "
-                    "there is nothing to search the FLAC index with. Paste a "
-                    "Spotify/song link or search by name instead.")
+                    "YouTube Music and FLAC fallback searches need a song title. "
+                    "Paste a Spotify link or search by song name.")
             return _download_one(pick, pick.get("title") or d["id"])
         # Album links (YT Music OLAK album auto-playlists, Spotify albums)
         # mean every track belongs to ONE album: force the album tag and keep
@@ -305,6 +342,7 @@ def run_job(payload: dict) -> dict:
                 dir_artist = counts.most_common(1)[0][0]
         outputs, errors, skipped = [], [], []
         jio = _jio_engine()
+        jio_for_youtube = jio if d["source"] == "youtube" else None
         n = len(pl["tracks"])
 
         def progress(i, current=""):
@@ -314,18 +352,45 @@ def run_job(payload: dict) -> dict:
 
         progress(0)
         for i, t in enumerate(pl["tracks"], 1):
-            label = f"{t.get('artist', '')} - {t.get('title', '')}"
+            if queue.cancellation_requested():
+                break
+            artist, title = (t.get("artist") or "").strip(), (t.get("title") or "").strip()
+            query = " ".join(filter(None, (artist, title))) or t.get("ref") or ""
+            label = " - ".join(filter(None, (artist, title))) or query or f"Track {i}"
+            track_info = {"track": label, "search_query": query}
             progress(i - 1, label)
             if SKIP_EXISTING and not t.get("pick"):
                 have = library.find(t.get("artist"), t.get("title"))
                 if have:
                     skipped.append({"track": label, "output": have})
                     continue
-            pick = t.get("pick") or match_with_rescue(ytm, t,
-                                                       authoritative_duration=(d["source"] == "spotify"),
-                                                       jio=jio)
+            attempts = []
+            match_error = None
+            try:
+                pick = t.get("pick") or match_with_rescue(
+                    ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
+            except Exception as exc:
+                pick = None
+                match_error = f"Track matching failed: {exc or type(exc).__name__}"
+            if queue.cancellation_requested():
+                break
+            if not pick and jio_for_youtube is not None:
+                attempts.append({"source": "youtube_music",
+                                 "status": "failed" if match_error else "no_match",
+                                 "error": match_error})
+                try:
+                    pick = jiosaavn_youtube_match(jio_for_youtube, t)
+                    if not pick:
+                        attempts.append({"source": "jiosaavn", "status": "no_match"})
+                except Exception as exc:
+                    attempts.append({"source": "jiosaavn", "status": "failed",
+                                     "error": f"Track matching failed: {exc or type(exc).__name__}"})
+                if queue.cancellation_requested():
+                    break
             if not pick:
-                errors.append({"track": f"{t['artist']} - {t['title']}", "error": "no match"})
+                error = match_error or ("No matching track found on YouTube Music"
+                                        + (" or JioSaavn" if jio else ""))
+                errors.append({**track_info, "error": error, "attempts": attempts})
                 continue
             try:
                 # album links: force the album title; spotify tracks in plain
@@ -340,14 +405,17 @@ def run_job(payload: dict) -> dict:
                 out = _download_one(pick, pick.get("query") or f"{t['artist']} {t['title']}",
                                     album_hint=hint, force_album=force,
                                     tracknumber=t.get("tracknumber") or i,
-                                    dir_artist=dir_artist)
+                                    dir_artist=dir_artist, jio_for_youtube=jio_for_youtube,
+                                    prior_attempts=attempts)
                 if out.get("skipped"):
                     skipped.append({"track": label, "output": out["output"]})
                 else:
                     outputs.append(out)
-            except Exception as exc:  # one bad track must not kill the dump
-                errors.append({"track": f"{t['artist']} - {t['title']}", "error": str(exc)})
-        progress(n)
+            except DownloadFailed as exc:
+                errors.append({**track_info, "error": str(exc), "attempts": exc.attempts})
+            except Exception as exc:
+                errors.append({**track_info, "error": str(exc) or type(exc).__name__})
+        progress(len(outputs) + len(errors) + len(skipped))
         return {"name": pl["name"], "total": len(pl["tracks"]),
                 "downloaded": len(outputs), "errors": errors, "outputs": outputs,
                 "skipped": skipped, "limited": pl.get("limited")}
@@ -377,6 +445,14 @@ class DownloadReq(BaseModel):
 class UrlReq(BaseModel):
     url: str
     light: bool = False  # resolve only: albums/playlists return name + count, no per-track matching
+
+
+class CancelPlaylistReq(BaseModel):
+    chat_id: int | None = None
+
+
+class PlaylistReq(UrlReq):
+    chat_id: int | None = None
 
 
 @app.get("/health")
@@ -412,12 +488,21 @@ def api_resolve(req: UrlReq, x_api_key: str | None = Header(None)):
 
 
 @app.post("/api/playlist")
-def api_playlist(req: UrlReq, x_api_key: str | None = Header(None)):
+def api_playlist(req: PlaylistReq, x_api_key: str | None = Header(None)):
     _check_api_key(x_api_key)
     if not req.url.strip():
         raise HTTPException(400, "url required")
-    job_id = queue.submit({"kind": "playlist", "url": req.url.strip()})
+    job_id = queue.submit({"kind": "playlist", "url": req.url.strip(), "chat_id": req.chat_id})
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/job/{job_id}/cancel")
+def api_cancel_playlist(job_id: str, req: CancelPlaylistReq, x_api_key: str | None = Header(None)):
+    _check_api_key(x_api_key)
+    status = queue.cancel_playlist(job_id, req.chat_id)
+    if status is None:
+        raise HTTPException(404, "unknown playlist job")
+    return {"job_id": job_id, "status": status}
 
 
 @app.get("/api/job/{job_id}")

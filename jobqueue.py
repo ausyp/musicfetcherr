@@ -39,6 +39,25 @@ class Queue:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
+    def cancel_playlist(self, job_id: str, chat_id: int | None) -> str | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if (not job or job["payload"].get("kind") != "playlist"
+                    or job["payload"].get("chat_id") != chat_id):
+                return None
+            if job["status"] == "queued":
+                job["status"] = "cancelled"
+                job["updated"] = time.time()
+            elif job["status"] == "running":
+                job["cancel_requested"] = True
+                job["updated"] = time.time()
+                return "cancelling"
+            return job["status"]
+
+    def cancellation_requested(self) -> bool:
+        with self._lock:
+            return bool(self._current and self._current.get("cancel_requested"))
+
     def set_progress(self, progress: dict) -> None:
         """Called by the worker to report progress on the job it's running."""
         with self._lock:
@@ -69,11 +88,14 @@ class Queue:
                 result = self.worker(job["payload"])
                 with self._lock:
                     job["result"] = result
-                    job["status"] = "done"
+                    job["status"] = "cancelled" if job.get("cancel_requested") else "done"
             except Exception as exc:  # noqa: BLE001 — job must never kill the loop
                 with self._lock:
-                    job["error"] = str(exc)
-                    job["status"] = "error"
+                    job["error"] = str(exc) or type(exc).__name__
+                    attempts = getattr(exc, "attempts", None)
+                    if attempts:
+                        job["attempts"] = attempts
+                    job["status"] = "cancelled" if job.get("cancel_requested") else "error"
             finally:
                 with self._lock:
                     job["updated"] = time.time()

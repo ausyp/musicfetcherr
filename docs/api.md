@@ -19,7 +19,7 @@ All work is async: you submit a job and poll for it. A job looks like:
 ```json
 {
   "id": "a1b2c3d4e5f6",
-  "status": "queued",            // queued | running | done | error
+  "status": "queued",            // queued | running | done | error | cancelled
   "created": 1723000000.0,
   "updated": 1723000010.0,
   "payload": {"kind": "search", "query": "LiSA ADAMAS"},
@@ -101,7 +101,11 @@ The `pick` is normally copied verbatim from a search candidate's result.
 
 `attempts` is the delivery trail (1 entry on a direct hit; 2+ when a lossy
 source failed and a higher-quality tier grabbed it). `format` reflects what
-was actually delivered (`.m4a`, `.flac`, …).
+was actually delivered (`.m4a`, `.flac`, …). A failed download job includes
+`attempts` alongside its top-level `error`. For a playlist that finishes with
+failed tracks, individual entries in `result.errors` include a `search_query`
+from the original track metadata and `attempts` when a download was attempted. Attempt statuses include `ok`, `failed`, `no_match`,
+and `skipped`.
 ```
 
 ## `POST /api/resolve`
@@ -160,6 +164,14 @@ a bad track is recorded in `errors` and never aborts the dump.
   ]
 }
 ```
+
+## `POST /api/job/{job_id}/cancel`
+
+Cancel a playlist job. Send `{}` for jobs submitted without a `chat_id`, or the
+same `{"chat_id": 123}` used to submit the playlist. A queued playlist becomes
+`cancelled` immediately. A running playlist returns `cancelling` and reaches
+`cancelled` after its current operation. Poll the job for completed tracks and
+any failures recorded before it stopped.
 
 ## `GET /api/job/{job_id}`
 

@@ -3,26 +3,20 @@
 
 Runs next to the Tailscale sidecar (shared network namespace + the tailscaled
 socket). Every CHECK_INTERVAL seconds it checks the India exit node:
-  * on India:   node answers `tailscale ping` AND traffic really leaves in
-                PREFERRED_COUNTRY. FAIL_THRESHOLD bad checks in a row
+  * on India:   FAIL_THRESHOLD failed `tailscale ping` checks in a row
                 -> clear the exit node (fallback: your normal connection).
   * on fallback: node answers RECOVER_THRESHOLD pings in a row
                 -> set the exit node again.
 With EXIT_NODE_FALLBACK=false it never falls back (downloads just stall until
 India returns), but it still re-applies the exit node if it was cleared.
 
-Optional Telegram notice on every switch (uses the bot token + allowed chats).
+Route changes are recorded in the container logs.
 """
 import json
 import os
 import subprocess
 import sys
 import time
-import urllib.parse
-import urllib.request
-
-sys.path.insert(0, "/app")
-from egress import lookup_country  # noqa: E402
 
 
 def env(n, d=""):
@@ -31,14 +25,10 @@ def env(n, d=""):
 
 SOCK = env("TS_SOCKET", "/var/run/tailscale/tailscaled.sock")
 EXIT = env("TS_EXIT_NODE")
-PREFERRED = (env("PREFERRED_COUNTRY") or env("REQUIRE_COUNTRY") or "IN").upper()
 FALLBACK = env("EXIT_NODE_FALLBACK", "true").lower() == "true"
 INTERVAL = int(env("FALLBACK_CHECK_INTERVAL", "30"))
 FAILS = int(env("FALLBACK_FAIL_THRESHOLD", "3"))
 RECOVER = int(env("FALLBACK_RECOVER_THRESHOLD", "2"))
-TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
-TG_CHATS = [c for c in env("TELEGRAM_ALLOWED_CHATS").replace(" ", "").split(",") if c]
-NOTIFY = env("FALLBACK_NOTIFY", "true").lower() == "true"
 
 
 def log(msg):
@@ -66,25 +56,10 @@ def exit_node_alive() -> bool:
         return False
 
 
-def notify(text):
-    if not (NOTIFY and TG_TOKEN and TG_CHATS):
-        return
-    for chat in TG_CHATS:
-        try:
-            data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-            urllib.request.urlopen(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                                   data=data, timeout=15)
-        except Exception as exc:
-            log(f"telegram notify failed: {exc}")
-
-
 def use_india():
     r = ts("set", f"--exit-node={EXIT}", "--exit-node-allow-lan-access=true")
     if r.returncode == 0:
         log(f"exit node {EXIT} restored")
-        time.sleep(5)
-        notify(f"🇮🇳 India exit node is back - JioSaavn downloads re-enabled "
-               f"(egress: {lookup_country() or '?'})")
     else:
         log(f"could not set exit node: {r.stderr.strip()}")
 
@@ -92,11 +67,7 @@ def use_india():
 def use_fallback():
     r = ts("set", "--exit-node=")
     if r.returncode == 0:
-        time.sleep(5)
-        c = lookup_country() or "?"
-        log(f"exit node {EXIT} down - fell back to direct connection ({c})")
-        notify(f"⚠️ India exit node unavailable - downloading via {c} for now. "
-               f"JioSaavn is paused; YouTube Music is used instead.")
+        log(f"exit node {EXIT} down - fell back to the normal internet connection")
     else:
         log(f"could not clear exit node: {r.stderr.strip()}")
 
@@ -104,7 +75,7 @@ def use_fallback():
 def main():
     if not EXIT:
         sys.exit("[watchdog] TS_EXIT_NODE is not set")
-    log(f"watching exit node {EXIT} (preferred {PREFERRED}, fallback "
+    log(f"watching exit node {EXIT} (fallback "
         f"{'ON' if FALLBACK else 'OFF'}, every {INTERVAL}s)")
     # wait for tailscaled
     for _ in range(60):
@@ -115,7 +86,7 @@ def main():
     while True:
         on_india = using_exit_node()
         if on_india:
-            healthy = exit_node_alive() and lookup_country() == PREFERRED
+            healthy = exit_node_alive()
             bad = 0 if healthy else bad + 1
             good = 0
             if bad:

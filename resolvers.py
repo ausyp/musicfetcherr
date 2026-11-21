@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -129,6 +130,7 @@ def youtube_tracklist(playlist_url: str) -> dict:
             title = title[len(artist) + 1:].strip()
         tracks.append({
             "artist": artist,
+            "song_artist": e.get("artist") or "",
             "title": title,
             "duration": int(e.get("duration") or 0),
             "ref": e.get("id"),
@@ -372,6 +374,40 @@ def _jiosaavn_rescue(jio, track: dict) -> dict | None:
         c["source"] = "jiosaavn"
         return c
     return None
+
+
+def _song_title_key(title: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFC", title).casefold()
+                   if ch.isalnum() or unicodedata.category(ch).startswith("M"))
+
+
+def jiosaavn_youtube_match(jio, track: dict) -> dict | None:
+    """Match a YouTube playlist entry by song title, not uploader name."""
+    title = (track.get("title") or "").split("|", 1)[0].strip()
+    title_key = _song_title_key(title)
+    if not title_key:
+        return None
+    artist = (track.get("song_artist") or "").strip()
+    ref = int(track.get("duration") or 0)
+    query = " ".join(filter(None, (artist, title)))
+    candidates = []
+    for candidate in jio.search(query, limit=10):
+        candidate_title = candidate.get("title") or ""
+        if _song_title_key(candidate_title) != title_key:
+            continue
+        if artist and not _artist_ok(candidate.get("artist") or "", artist):
+            continue
+        duration = int(candidate.get("duration") or 0)
+        if ref and (not duration or abs(duration - ref) > 45):
+            continue
+        candidates.append((abs(duration - ref) if ref else 0, candidate))
+    if not candidates:
+        return None
+    distance, best = min(candidates, key=lambda pair: pair[0])
+    # With no verified artist, avoid choosing between equally plausible recordings.
+    if not artist and len({c.get("artist") for delta, c in candidates if delta == distance}) > 1:
+        return None
+    return {**best, "source": "jiosaavn", "query": query}
 
 
 def match_with_rescue(ytm_engine, track: dict, authoritative_duration: bool,
