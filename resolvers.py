@@ -391,33 +391,50 @@ def _song_title_key(title: str) -> str:
                    if ch.isalnum() or unicodedata.category(ch).startswith("M"))
 
 
+def _jiosaavn_title_queries(title: str) -> list[str]:
+    """Prefer the song title when the upload title includes an explicit credit."""
+    title = title.split("|", 1)[0].strip()
+    wrappers = (
+        r"^(.+?)\s+song\s+from\s+.+$",
+        r"^.+?\b(?:wedding|video|lyric)\s+song\s*[-–—]\s*(.+)$",
+        r"^(.+?)\s+by\s+.+?\s+[-–—]\s+(?:music mojo\b.*|official .+)$",
+        r"^.+?\s+[-–—]\s+(.+?)\s+(?:malayalam|tamil|telugu|kannada|hindi)$",
+    )
+    for pattern in wrappers:
+        match = re.match(pattern, title, re.IGNORECASE)
+        if match:
+            cleaned = match.group(1).strip()
+            return [cleaned, title]
+    return [title]
+
+
 def jiosaavn_youtube_match(jio, track: dict) -> dict | None:
     """Match a YouTube playlist entry by song title, not uploader name."""
-    title = (track.get("title") or "").split("|", 1)[0].strip()
-    title_key = _song_title_key(title)
-    if not title_key:
-        return None
     artist = (track.get("song_artist") or "").strip()
     ref = int(track.get("duration") or 0)
-    query = " ".join(filter(None, (artist, title)))
-    candidates = []
-    for candidate in jio.search(query, limit=10):
-        candidate_title = candidate.get("title") or ""
-        if _song_title_key(candidate_title) != title_key:
+    for title in _jiosaavn_title_queries(track.get("title") or ""):
+        title_key = _song_title_key(title)
+        if not title_key:
             continue
-        if artist and not _artist_ok(candidate.get("artist") or "", artist):
+        query = " ".join(filter(None, (artist, title)))
+        candidates = []
+        for candidate in jio.search(query, limit=10):
+            if _song_title_key(candidate.get("title") or "") != title_key:
+                continue
+            if artist and not _artist_ok(candidate.get("artist") or "", artist):
+                continue
+            duration = int(candidate.get("duration") or 0)
+            if ref and (not duration or abs(duration - ref) > 45):
+                continue
+            candidates.append((abs(duration - ref) if ref else 0, candidate))
+        if not candidates:
             continue
-        duration = int(candidate.get("duration") or 0)
-        if ref and (not duration or abs(duration - ref) > 45):
+        distance, best = min(candidates, key=lambda pair: pair[0])
+        # With no verified artist, avoid choosing between equally plausible recordings.
+        if not artist and len({c.get("artist") for delta, c in candidates if delta == distance}) > 1:
             continue
-        candidates.append((abs(duration - ref) if ref else 0, candidate))
-    if not candidates:
-        return None
-    distance, best = min(candidates, key=lambda pair: pair[0])
-    # With no verified artist, avoid choosing between equally plausible recordings.
-    if not artist and len({c.get("artist") for delta, c in candidates if delta == distance}) > 1:
-        return None
-    return {**best, "source": "jiosaavn", "query": query}
+        return {**best, "source": "jiosaavn", "query": query}
+    return None
 
 
 def match_with_rescue(ytm_engine, track: dict, authoritative_duration: bool,

@@ -124,8 +124,9 @@ yt-dlp against `music.youtube.com`'s song catalog:
 ## Link ingestion (`resolvers.py`)
 
 For YouTube playlists, Musicfetcherr tries JioSaavn first when it is enabled.
-It matches the song title and checks the duration when available, which helps
-when the uploader is a record label. If JioSaavn cannot match or deliver the
+It recognises common credits in upload titles, such as “song from” and Music
+Mojo credits. The catalog title must still match, and the duration is checked
+when available. If JioSaavn cannot match or deliver the
 song, Musicfetcherr tries YouTube Music, then the original playlist video.
 That video can be a music clip, an edit, or a cover. Entries labelled as full
 movies are skipped.
