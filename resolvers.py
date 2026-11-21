@@ -23,6 +23,8 @@ edits, TV sizes) so the top search hit wins.
 from __future__ import annotations
 
 import json
+import html
+from difflib import SequenceMatcher
 import logging
 import re
 import unicodedata
@@ -349,43 +351,6 @@ def match(ytm_engine, track: dict, authoritative_duration: bool) -> dict | None:
     return best
 
 
-def _jiosaavn_rescue(jio, track: dict) -> dict | None:
-    """Spotify [(authoritative) track with NO YouTube Music match -> try the
-    exact song on JioSaavn. STRICT by design — a pasted Spotify track must land
-    on the real track, not a JioSaavn cover: candidate must share an artist
-    token AND a title token AND (when the ref has a duration) be within ±45s of
-    the authoritative album duration. Version-markered candidates (cover/live/
-    instrumental/remix/karaoke/tv/radio) are rejected unless the ref itself is
-    marked. Returns a pick (source='jiosaavn') or None (-> honest gap). Added
-    2026-08-30 as the rescue behind match() — only reached when YT has no match,
-    so it never overrides a clean YT pick."""
-    title = (track.get("title") or "").strip()
-    artist = (track.get("artist") or "").strip()
-    q = f"{artist} {title}".strip()
-    if not title:
-        return None
-    ref = int(track.get("duration") or 0)
-    want_marked = bool(_VERSION_MARKERS.search(title.lower()))
-    try:
-        cands = jio.search(q, limit=10)
-    except Exception:
-        return None
-    for c in cands:
-        if not _artist_ok(c.get("artist") or "", artist):
-            continue
-        if not _title_overlap(c.get("title") or "", title):
-            continue
-        if not want_marked and _VERSION_MARKERS.search((c.get("title") or "").lower()):
-            continue
-        if ref and abs(int(c.get("duration") or 0) - ref) > 45:
-            continue
-        c = dict(c)
-        c.setdefault("query", q)
-        c["source"] = "jiosaavn"
-        return c
-    return None
-
-
 def _song_title_key(title: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFC", title).casefold()
                    if ch.isalnum() or unicodedata.category(ch).startswith("M"))
@@ -393,11 +358,15 @@ def _song_title_key(title: str) -> str:
 
 def _jiosaavn_title_queries(title: str) -> list[str]:
     """Prefer the song title when the upload title includes an explicit credit."""
+    title = html.unescape(title).strip()
+    title = re.sub(r'\s*\(from\s+["“].*?["”]\)\s*', " ", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*\((?:feat\.?|ft\.?).*?\)", "", title, flags=re.IGNORECASE)
     title = title.split("|", 1)[0].strip()
     wrappers = (
         r"^(.+?)\s+song\s+from\s+.+$",
         r"^.+?\b(?:wedding|video|lyric)\s+song\s*[-–—]\s*(.+)$",
         r"^(.+?)\s+by\s+.+?\s+[-–—]\s+(?:music mojo\b.*|official .+)$",
+        r"^(.+?)\s+full song\s+by\s+.+$",
         r"^.+?\s+[-–—]\s+(.+?)\s+(?:malayalam|tamil|telugu|kannada|hindi)$",
     )
     for pattern in wrappers:
@@ -405,47 +374,93 @@ def _jiosaavn_title_queries(title: str) -> list[str]:
         if match:
             cleaned = match.group(1).strip()
             return [cleaned, title]
-    return [title]
+    parts = re.split(r"\s+[-–—]\s*|\s*[-–—]\s+", title, maxsplit=1)
+    return list(dict.fromkeys([title, *parts]))
 
 
-def jiosaavn_youtube_match(jio, track: dict) -> dict | None:
-    """Match a YouTube playlist entry by song title, not uploader name."""
-    artist = (track.get("song_artist") or "").strip()
+def match_jiosaavn(jio, track: dict, authoritative_duration: bool = False) -> dict | None:
+    """Search progressively while requiring agreement on recording identity."""
+    titles = list(dict.fromkeys(t for t in _jiosaavn_title_queries(track.get("title") or "") if t))
+    if not titles:
+        return None
+    artist = (track.get("artist") if authoritative_duration else track.get("song_artist")) or ""
+    album = (track.get("album") or "").strip()
     ref = int(track.get("duration") or 0)
-    for title in _jiosaavn_title_queries(track.get("title") or ""):
-        title_key = _song_title_key(title)
-        if not title_key:
+    artist_tokens = set(re.findall(r"[^\W_]+", artist.casefold(), flags=re.UNICODE))
+    artist_tokens = {token for token in artist_tokens if len(token) > 1}
+    primary_artist = re.split(r"[,;/]", artist, maxsplit=1)[0].strip()
+    queries = []
+    for title in titles:
+        queries.extend(filter(None, (
+            f"{title} {artist}".strip() if artist else "",
+            f"{title} {primary_artist}".strip() if primary_artist and primary_artist != artist else "",
+            f"{title} {album}".strip() if album else "",
+            title,
+        )))
+    queries = list(dict.fromkeys(queries))[:8]
+    matches = {}
+    search_error = None
+    searched = False
+    reference_versions = set(_VERSION_MARKERS.findall(titles[0].casefold()))
+    for query in queries:
+        try:
+            candidates = jio.search(query, limit=20)
+            searched = True
+        except Exception as exc:
+            search_error = exc
+            logger.warning("JioSaavn search failed: %s", type(exc).__name__)
             continue
-        query = " ".join(filter(None, (artist, title)))
-        candidates = []
-        for candidate in jio.search(query, limit=10):
-            if _song_title_key(candidate.get("title") or "") != title_key:
-                continue
-            if artist and not _artist_ok(candidate.get("artist") or "", artist):
+        for candidate in candidates:
+            candidate_title = candidate.get("title") or ""
+            if set(_VERSION_MARKERS.findall(candidate_title.casefold())) != reference_versions:
                 continue
             duration = int(candidate.get("duration") or 0)
-            if ref and (not duration or abs(duration - ref) > 45):
+            delta = abs(duration - ref) if ref and duration else 0
+            if ref and (not duration or delta > 45):
                 continue
-            candidates.append((abs(duration - ref) if ref else 0, candidate))
-        if not candidates:
-            continue
-        distance, best = min(candidates, key=lambda pair: pair[0])
-        # With no verified artist, avoid choosing between equally plausible recordings.
-        if not artist and len({c.get("artist") for delta, c in candidates if delta == distance}) > 1:
-            continue
-        return {**best, "source": "jiosaavn", "query": query}
-    return None
+            candidate_artist = candidate.get("artist") or ""
+            candidate_tokens = set(re.findall(r"[^\W_]+", candidate_artist.casefold(), flags=re.UNICODE))
+            artist_agrees = bool(artist_tokens & candidate_tokens)
+            if artist_tokens and not artist_agrees:
+                continue
+            candidate_key = _song_title_key(_jiosaavn_title_queries(candidate_title)[0])
+            exact = any(candidate_key == _song_title_key(title) for title in titles)
+            if not exact:
+                # A spelling variation needs both a verified artist and a near-exact duration.
+                if not artist_agrees or not ref or delta > 10:
+                    continue
+                if not any(min(len(candidate_key), len(_song_title_key(title))) >= 5
+                           and SequenceMatcher(None, candidate_key, _song_title_key(title)).ratio() >= 0.90
+                           for title in titles):
+                    continue
+            album_agrees = bool(album and _song_title_key(album) == _song_title_key(candidate.get("album") or ""))
+            score = (int(exact), int(album_agrees), -delta)
+            identity = (candidate.get("track_id"), _song_title_key(candidate_artist), candidate_key)
+            matches[identity] = (score, {**candidate, "source": "jiosaavn", "query": query})
+        if matches:
+            best_score, best = max(matches.values(), key=lambda item: item[0])
+            if artist_tokens and best_score[0] and (not ref or best_score[2] >= -10):
+                return best
+    if not matches:
+        if not searched and search_error:
+            raise search_error
+        return None
+    best_score, best = max(matches.values(), key=lambda item: item[0])
+    tied_artists = {_song_title_key(c.get("artist") or "")
+                   for score, c in matches.values() if score == best_score}
+    if not artist_tokens and len(tied_artists) > 1:
+        return None
+    return best
 
 
 def match_with_rescue(ytm_engine, track: dict, authoritative_duration: bool,
                       jio=None) -> dict | None:
-    """match() plus a JioSaavn rescue: when a Spotify (authoritative) track has
-    NO clean YT Music match, try the exact song on JioSaavn so the album/single
-    link still lands instead of gapping. Non-authoritative (YT) refs never
-    rescue — only the exact-title Spotify cases, and only on a strict hit."""
-    p = match(ytm_engine, track, authoritative_duration)
-    if p is not None:
-        return p
-    if authoritative_duration and jio is not None:
-        return _jiosaavn_rescue(jio, track)
-    return None
+    """Prefer JioSaavn for resolved links, followed by YouTube Music."""
+    if jio is not None:
+        try:
+            pick = match_jiosaavn(jio, track, authoritative_duration)
+            if pick:
+                return pick
+        except Exception as exc:
+            logger.warning("JioSaavn matching failed: %s", type(exc).__name__)
+    return match(ytm_engine, track, authoritative_duration)

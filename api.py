@@ -38,7 +38,7 @@ from naming import target_path  # noqa: E402
 from postprocess import PostProcessor  # noqa: E402
 from jobqueue import Queue  # noqa: E402
 from resolvers import (  # noqa: E402
-    detect, jiosaavn_youtube_match, match, match_with_rescue, spotify_tracklist, youtube_tracklist,
+    detect, match_jiosaavn, match, match_with_rescue, spotify_tracklist, youtube_tracklist,
 )
 from plex import PlexScanner  # noqa: E402
 from navidrome import NavidromeScanner  # noqa: E402
@@ -59,9 +59,7 @@ navidrome = NavidromeScanner(CFG)
 egress = Egress(CFG)
 library = Library(CFG["output"]["root"])
 SKIP_EXISTING = (CFG.get("library") or {}).get("skip_existing", True)
-# YT Music engine used directly by the URL resolver for art-track matching —
-# a pasted Spotify track must land on the clean studio version, not on a
-# JioSaavn cover (merged search would let covers in via duration ties).
+# YouTube Music resolves video metadata and provides the second audio source.
 ytm = YoutubeMusicEngine(CFG)
 
 
@@ -130,7 +128,8 @@ def _download_with_failover(pick: dict, *,
         attempts.append({"source": source_label, "status": "skipped" if skipped else "failed",
                          "error": str(exc)})
         # JioSaavn (or any non-YT source) failed -> same song from YouTube Music.
-        if src != "youtube_music" and pick.get("title") and not prior_attempts:
+        youtube_tried = any(a.get("source") == "youtube_music" for a in attempts)
+        if src != "youtube_music" and pick.get("title") and not youtube_tried:
             yt_source = "youtube_music"
             try:
                 yp = match(ytm, {"artist": pick.get("artist") or "",
@@ -286,6 +285,8 @@ def run_job(payload: dict) -> dict:
     kind = payload.get("kind")
     if kind == "search":
         cands = engine.search(payload["query"])
+        priority = {"jiosaavn": 0, "youtube_music": 1}
+        cands.sort(key=lambda c: priority.get(c.get("source"), 2))
         if not cands:
             raise EngineError(f"no results for: {payload['query']}")
         return {"candidates": cands, "count": len(cands)}
@@ -328,7 +329,22 @@ def run_job(payload: dict) -> dict:
                     "region-blocked) and no song title could be fetched — so "
                     "YouTube Music and FLAC fallback searches need a song title. "
                     "Paste a Spotify link or search by song name.")
-            return _download_one(pick, pick.get("title") or d["id"])
+            original = dict(pick)
+            attempts = []
+            jio = _jio_engine()
+            if jio:
+                try:
+                    preferred = match_jiosaavn(jio, pick)
+                    if preferred:
+                        pick = preferred
+                    else:
+                        attempts.append({"source": "jiosaavn", "status": "no_match"})
+                except Exception as exc:
+                    attempts.append({"source": "jiosaavn", "status": "failed", "error": str(exc)})
+            if queue.cancellation_requested():
+                return {}
+            return _download_one(pick, pick.get("title") or d["id"],
+                                 prior_attempts=attempts, original_video=original)
         # Album links (YT Music OLAK album auto-playlists, Spotify albums)
         # mean every track belongs to ONE album: force the album tag and keep
         # the whole album under its main artist's folder. Plain user playlists
@@ -344,7 +360,6 @@ def run_job(payload: dict) -> dict:
                 dir_artist = counts.most_common(1)[0][0]
         outputs, errors, skipped, ignored = [], [], [], []
         jio = _jio_engine()
-        jio_for_youtube = jio if d["source"] == "youtube" else None
         n = len(pl["tracks"])
 
         def progress(i, current=""):
@@ -379,9 +394,9 @@ def run_job(payload: dict) -> dict:
             attempts = []
             match_error = None
             pick = t.get("pick")
-            if not pick and jio_for_youtube is not None:
+            if not pick and jio is not None:
                 try:
-                    pick = jiosaavn_youtube_match(jio_for_youtube, t)
+                    pick = match_jiosaavn(jio, t, authoritative_duration=(d["source"] == "spotify"))
                     if not pick:
                         attempts.append({"source": "jiosaavn", "status": "no_match"})
                 except Exception as exc:
@@ -391,13 +406,12 @@ def run_job(payload: dict) -> dict:
                     break
             if not pick:
                 try:
-                    pick = match_with_rescue(
-                        ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
+                    pick = match(ytm, t, authoritative_duration=(d["source"] == "spotify"))
                 except Exception as exc:
                     match_error = f"Track matching failed: {exc or type(exc).__name__}"
                 if queue.cancellation_requested():
                     break
-                if not pick and (jio_for_youtube is not None or original_video is not None):
+                if not pick:
                     attempts.append({"source": "youtube_music",
                                      "status": "failed" if match_error else "no_match",
                                      "error": match_error})

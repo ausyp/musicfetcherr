@@ -10,7 +10,7 @@ Telegram, Tailscale, storage, and troubleshooting.
 
 ## What it does
 
-- **YouTube playlists** try JioSaavn first, then YouTube Music, then the exact video
+- **Links and playlists** try JioSaavn first, then YouTube Music. YouTube lists can also try the exact video
   in the playlist. Videos labelled as full movies are skipped. JioSaavn matching
   removes common upload credits and uses the available artist and duration metadata.
 - **Spotify links** supply track and album metadata for matching against the audio
