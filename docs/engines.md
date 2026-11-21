@@ -123,11 +123,10 @@ yt-dlp against `music.youtube.com`'s song catalog:
 
 ## Link ingestion (`resolvers.py`)
 
-Pasted links are classified, resolved to track lists, then matched to a clean
-YT Music art track. For YouTube playlists, Musicfetcherr searches JioSaavn if
-YouTube Music cannot match or download a song. It checks the title and uses the
-duration when available, which helps when the uploader is a record label.
-When those sources fail, the bot tries the video ID from the playlist itself.
+For YouTube playlists, Musicfetcherr tries JioSaavn first when it is enabled.
+It matches the song title and checks the duration when available, which helps
+when the uploader is a record label. If JioSaavn cannot match or deliver the
+song, Musicfetcherr tries YouTube Music, then the original playlist video.
 That video can be a music clip, an edit, or a cover. Entries labelled as full
 movies are skipped.
 
