@@ -15,7 +15,7 @@ Spotify (track / album / playlist):
   album masters) and drive the min-diff pick in match().
 
 Playlist downloads look for a clean studio track first. YouTube playlist
-entries can fall back to the original video. For Spotify
+entries try JioSaavn before YouTube Music and can fall back to the original video. For Spotify
 references the album duration is authoritative and drives a min-diff pick;
 for YouTube playlist entries the entry durations are unreliable (CLiPs,
 edits, TV sizes) so the top search hit wins.

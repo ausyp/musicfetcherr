@@ -361,15 +361,36 @@ def failure_reason(error, limit: int = 240) -> str:
     return html.escape(reason if len(reason) <= limit else reason[:limit - 1] + "…")
 
 
+_SOURCE_NAMES = {
+    "jiosaavn": "JioSaavn", "youtube_music": "YouTube Music",
+    "youtube_original": "Original YouTube video", "qbit": "FLAC (qBittorrent)",
+}
+
+
+def delivered_source(result: dict) -> str:
+    for attempt in reversed(result.get("attempts") or []):
+        if attempt.get("status") == "ok" and attempt.get("source"):
+            source = attempt["source"]
+            break
+    else:
+        source = (result.get("picked") or {}).get("source") or "Unknown source"
+    return html.escape(_SOURCE_NAMES.get(source, source))
+
+
+def delivered_track(result: dict) -> str:
+    meta = result.get("meta") or {}
+    pick = result.get("picked") or {}
+    artist = meta.get("artist") or pick.get("artist")
+    title = meta.get("title") or pick.get("title") or "Unknown track"
+    label = f"{artist} — {title}" if artist else str(title)
+    return html.escape(label[:200])
+
+
 def fmt_attempts(attempts, limit: int = 240) -> str:
-    names = {
-        "jiosaavn": "JioSaavn", "youtube_music": "YouTube Music",
-        "youtube_original": "Original YouTube video", "qbit": "FLAC (qBittorrent)",
-    }
     lines = []
     for attempt in attempts or []:
         source = str(attempt.get("source") or "Unknown source")
-        label = html.escape(names.get(source, source))
+        label = html.escape(_SOURCE_NAMES.get(source, source))
         status = attempt.get("status")
         if status == "ok":
             pack = attempt.get("pack")
@@ -397,6 +418,27 @@ def playlist_failure_messages(errors: list[dict], job_id: str):
         if i < 5:
             detail = fmt_attempts(error.get("attempts"), limit=160) or failure_reason(error.get("error"))
             entry += f"\n{detail}"
+        if len(lines) > 1 and size + 2 + len(entry) > 3800:
+            yield "\n\n".join(lines)
+            lines = [header]
+            size = len(header)
+        lines.append(entry)
+        size += 2 + len(entry)
+    if len(lines) > 1:
+        yield "\n\n".join(lines)
+
+
+def playlist_source_messages(outputs: list[dict]):
+    header = "<b>Downloaded tracks and sources</b>"
+    lines = [header]
+    size = len(header)
+    expanded = 0
+    for result in outputs:
+        entry = f"• <b>{delivered_track(result)}</b> · {delivered_source(result)}"
+        attempts = result.get("attempts") or []
+        if len(attempts) > 1 and expanded < 3:
+            entry += f"\n{fmt_attempts(attempts, limit=120)}"
+            expanded += 1
         if len(lines) > 1 and size + 2 + len(entry) > 3800:
             yield "\n\n".join(lines)
             lines = [header]
@@ -493,7 +535,7 @@ def _do_download(chat: int, pick: dict):
     if j["status"] == "done" and res.get("output"):
         out = res["output"]
         qual = probe(out)
-        msg = f"✅ {fmt_pick(pick)}"
+        msg = f"✅ <b>{delivered_track(res)}</b>\nDownloaded from <b>{delivered_source(res)}</b>"
         if qual:
             msg += f"\n🎧 <b>{html.escape(qual)}</b>"
         extra = []
@@ -629,8 +671,11 @@ def _link_download(chat: int, url: str, *, playlist_name: str = "", cancellable:
                         f" {p['downloaded']} saved to your library.")
         if not edit(chat, state["mid"], heading, **clear_controls):
             say(chat, heading)
-        for message in playlist_failure_messages((j.get("result") or {}).get("errors") or [], jid):
+        partial = j.get("result") or {}
+        for message in playlist_failure_messages(partial.get("errors") or [], jid):
             say(chat, message, link_preview_options={"is_disabled": True})
+        for message in playlist_source_messages(partial.get("outputs") or []):
+            say(chat, message)
         return
     res = j.get("result") or {}
     if j["status"] != "done":
@@ -660,7 +705,8 @@ def _link_download(chat: int, url: str, *, playlist_name: str = "", cancellable:
             extra.append(f"lyrics {'yes' if res['lyrics'] else 'no'}")
         if "cover" in res:
             extra.append(f"cover {'yes' if res['cover'] else 'no'}")
-        msg = f"✅ <b>{art} — {tit}</b>" + (f" ({', '.join(extra)})" if extra else "")
+        msg = f"✅ <b>{delivered_track(res)}</b>" + (f" ({', '.join(extra)})" if extra else "")
+        msg += f"\nDownloaded from <b>{delivered_source(res)}</b>"
         qual = probe(out)
         tra = fmt_attempts(res.get("attempts"))
         if qual:
@@ -703,14 +749,8 @@ def _link_download(chat: int, url: str, *, playlist_name: str = "", cancellable:
     say(chat, head)
     for message in playlist_failure_messages(errs, jid):
         say(chat, message, link_preview_options={"is_disabled": True})
-    recovered = [out for out in outs if len(out.get("attempts") or []) > 1]
-    if recovered:
-        lines = [f"↪️ <b>{len(recovered)} tracks downloaded using a fallback</b>"]
-        for out in recovered[:3]:
-            picked = out.get("picked") or {}
-            track = html.escape(str(picked.get("title") or "Unknown track")[:120])
-            lines.append(f"<b>{track}</b>\n{fmt_attempts(out['attempts'], limit=120)}")
-        say(chat, "\n\n".join(lines))
+    for message in playlist_source_messages(outs):
+        say(chat, message)
     if len(outs) == 1 and outs[0].get("output"):
         p = outs[0]["output"]
         try:

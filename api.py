@@ -100,7 +100,7 @@ class DownloadFailed(EngineError):
         self.attempts = attempts
 
 
-def _download_with_failover(pick: dict, *, jio_for_youtube=None,
+def _download_with_failover(pick: dict, *,
                             prior_attempts: list[dict] | None = None,
                             original_video: dict | None = None) -> tuple:
     """engine.download(pick); on failure automatically falls back to the qbit
@@ -113,9 +113,9 @@ def _download_with_failover(pick: dict, *, jio_for_youtube=None,
     """
     attempts = list(prior_attempts or [])
     src = pick.get("source")
-    original_selected = (src == "youtube_music" and original_video is not None
-                         and pick.get("track_id") == original_video["track_id"])
-    source_label = "youtube_original" if original_selected else src
+    original_id = original_video["track_id"] if original_video else None
+    original_attempted = src == "youtube_music" and original_id is not None and pick.get("track_id") == original_id
+    source_label = "youtube_original" if original_attempted else src
     skipped = False
     try:
         if src == "jiosaavn":
@@ -131,40 +131,27 @@ def _download_with_failover(pick: dict, *, jio_for_youtube=None,
                          "error": str(exc)})
         # JioSaavn (or any non-YT source) failed -> same song from YouTube Music.
         if src != "youtube_music" and pick.get("title") and not prior_attempts:
+            yt_source = "youtube_music"
             try:
                 yp = match(ytm, {"artist": pick.get("artist") or "",
                                  "title": pick.get("title") or "",
                                  "duration": pick.get("duration") or 0},
                            authoritative_duration=False)
                 if yp:
+                    if original_id is not None and yp.get("track_id") == original_id:
+                        original_attempted = True
+                        yt_source = "youtube_original"
                     local = ytm.download(yp)
                     pick.update(yp)  # tag/meta from the pick we actually got
-                    attempts.append({"source": "youtube_music", "status": "ok",
+                    attempts.append({"source": yt_source, "status": "ok",
                                      "note": "YouTube Music fallback"})
                     return local, attempts
                 attempts.append({"source": "youtube_music", "status": "no_match",
                                  "error": "No matching track found"})
             except Exception as yex:
-                attempts.append({"source": "youtube_music", "status": "failed",
+                attempts.append({"source": yt_source, "status": "failed",
                                  "error": str(yex)})
-        if src == "youtube_music" and jio_for_youtube is not None and not prior_attempts:
-            try:
-                jp = jiosaavn_youtube_match(jio_for_youtube, pick)
-                if jp is None:
-                    attempts.append({"source": "jiosaavn", "status": "no_match"})
-                else:
-                    reason = egress.jiosaavn_skip_reason()
-                    if reason:
-                        attempts.append({"source": "jiosaavn", "status": "skipped", "error": reason})
-                    else:
-                        local = engine.download(jp)
-                        pick.update(jp)
-                        attempts.append({"source": "jiosaavn", "status": "ok",
-                                         "note": "JioSaavn fallback"})
-                        return local, attempts
-            except Exception as jex:
-                attempts.append({"source": "jiosaavn", "status": "failed", "error": str(jex)})
-        if original_video is not None and not original_selected:
+        if original_video is not None and not original_attempted:
             try:
                 local = engine.download(original_video)
                 pick.clear()
@@ -211,7 +198,7 @@ def _download_with_failover(pick: dict, *, jio_for_youtube=None,
 
 def _download_one(pick: dict, query: str, album_hint: str = "",
                   tracknumber: int | None = None, force_album: str = "",
-                  dir_artist: str | None = None, *, jio_for_youtube=None,
+                  dir_artist: str | None = None, *,
                   prior_attempts: list[dict] | None = None,
                   original_video: dict | None = None) -> dict:
     """Download + post-process one pick. Shared by /api/download and the
@@ -228,8 +215,7 @@ def _download_one(pick: dict, query: str, album_hint: str = "",
         if have:
             return _already(pick, query, have)
     local, attempts = _download_with_failover(
-        pick, jio_for_youtube=jio_for_youtube, prior_attempts=prior_attempts,
-        original_video=original_video)
+        pick, prior_attempts=prior_attempts, original_video=original_video)
     meta = engine.meta(local, pick, query)
     if force_album:
         meta["album"] = force_album
@@ -392,18 +378,7 @@ def run_job(payload: dict) -> dict:
                     continue
             attempts = []
             match_error = None
-            try:
-                pick = t.get("pick") or match_with_rescue(
-                    ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
-            except Exception as exc:
-                pick = None
-                match_error = f"Track matching failed: {exc or type(exc).__name__}"
-            if queue.cancellation_requested():
-                break
-            if not pick and (jio_for_youtube is not None or original_video is not None):
-                attempts.append({"source": "youtube_music",
-                                 "status": "failed" if match_error else "no_match",
-                                 "error": match_error})
+            pick = t.get("pick")
             if not pick and jio_for_youtube is not None:
                 try:
                     pick = jiosaavn_youtube_match(jio_for_youtube, t)
@@ -414,6 +389,18 @@ def run_job(payload: dict) -> dict:
                                      "error": f"Track matching failed: {exc or type(exc).__name__}"})
                 if queue.cancellation_requested():
                     break
+            if not pick:
+                try:
+                    pick = match_with_rescue(
+                        ytm, t, authoritative_duration=(d["source"] == "spotify"), jio=jio)
+                except Exception as exc:
+                    match_error = f"Track matching failed: {exc or type(exc).__name__}"
+                if queue.cancellation_requested():
+                    break
+                if not pick and (jio_for_youtube is not None or original_video is not None):
+                    attempts.append({"source": "youtube_music",
+                                     "status": "failed" if match_error else "no_match",
+                                     "error": match_error})
             if not pick and original_video is not None:
                 pick = dict(original_video)
             if not pick:
@@ -434,8 +421,8 @@ def run_job(payload: dict) -> dict:
                 out = _download_one(pick, pick.get("query") or f"{t['artist']} {t['title']}",
                                     album_hint=hint, force_album=force,
                                     tracknumber=t.get("tracknumber") or i,
-                                    dir_artist=dir_artist, jio_for_youtube=jio_for_youtube,
-                                    prior_attempts=attempts, original_video=original_video)
+                                    dir_artist=dir_artist, prior_attempts=attempts,
+                                    original_video=original_video)
                 if out.get("skipped"):
                     skipped.append({"track": label, "output": out["output"]})
                 else:
