@@ -77,6 +77,7 @@ class YoutubeMusicEngine:
             "source": self.name,
             "track_id": vid,
             "artist": artist,
+            "song_artist": info.get("artist") or "",
             "title": title,
             "album": info.get("album") or "",
             "duration": int(info.get("duration") or 0),
