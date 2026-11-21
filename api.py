@@ -356,7 +356,7 @@ def run_job(payload: dict) -> dict:
             counts = Counter(t.get("artist") for t in pl["tracks"] if t.get("artist"))
             if counts:
                 dir_artist = counts.most_common(1)[0][0]
-        outputs, errors, skipped = [], [], []
+        outputs, errors, skipped, ignored = [], [], [], []
         jio = _jio_engine()
         jio_for_youtube = jio if d["source"] == "youtube" else None
         n = len(pl["tracks"])
@@ -364,7 +364,7 @@ def run_job(payload: dict) -> dict:
         def progress(i, current=""):
             queue.set_progress({"name": pl["name"], "total": n, "done": i,
                                 "downloaded": len(outputs), "skipped": len(skipped),
-                                "failed": len(errors), "current": current})
+                                "failed": len(errors), "ignored": len(ignored), "current": current})
 
         progress(0)
         for i, t in enumerate(pl["tracks"], 1):
@@ -373,6 +373,10 @@ def run_job(payload: dict) -> dict:
             artist, title = (t.get("artist") or "").strip(), (t.get("title") or "").strip()
             query = " ".join(filter(None, (artist, title))) or t.get("ref") or ""
             label = " - ".join(filter(None, (artist, title))) or query or f"Track {i}"
+            progress(i - 1, label)
+            if d["source"] == "youtube" and t.get("full_movie"):
+                ignored.append({"track": label, "reason": "Full movie"})
+                continue
             track_info = {"track": label, "search_query": query}
             original_video = None
             if d["source"] == "youtube" and t.get("ref"):
@@ -381,7 +385,6 @@ def run_job(payload: dict) -> dict:
                     "artist": t.get("song_artist") or artist or "Unknown Artist",
                     "title": title or t["ref"], "duration": t.get("duration") or 0,
                 }
-            progress(i - 1, label)
             if SKIP_EXISTING and not t.get("pick"):
                 have = library.find(t.get("artist"), t.get("title"))
                 if have:
@@ -441,10 +444,10 @@ def run_job(payload: dict) -> dict:
                 errors.append({**track_info, "error": str(exc), "attempts": exc.attempts})
             except Exception as exc:
                 errors.append({**track_info, "error": str(exc) or type(exc).__name__})
-        progress(len(outputs) + len(errors) + len(skipped))
+        progress(len(outputs) + len(errors) + len(skipped) + len(ignored))
         return {"name": pl["name"], "total": len(pl["tracks"]),
                 "downloaded": len(outputs), "errors": errors, "outputs": outputs,
-                "skipped": skipped, "limited": pl.get("limited")}
+                "skipped": skipped, "ignored": ignored, "limited": pl.get("limited")}
 
     # download + post-process
     return _download_one(payload["pick"], payload.get("query", ""))

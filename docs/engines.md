@@ -128,7 +128,8 @@ YT Music art track. For YouTube playlists, Musicfetcherr searches JioSaavn if
 YouTube Music cannot match or download a song. It checks the title and uses the
 duration when available, which helps when the uploader is a record label.
 When those sources fail, the bot tries the video ID from the playlist itself.
-That video can be a music clip, an edit, or a cover.
+That video can be a music clip, an edit, or a cover. Entries labelled as full
+movies are skipped.
 
 - **YouTube**: `watch`/`shorts`/`embed`/`live`/`youtu.be`/
   `music.youtube.com/song` → single track. `/playlist` or `OLAK5uy_` list id

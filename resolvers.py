@@ -108,6 +108,9 @@ def _clean_title(title: str) -> str:
     return re.sub(r"\s{2,}", " ", t).strip()
 
 
+_FULL_MOVIE_TITLE = re.compile(r"\bfull[ -]+(?:length[ -]+)?(?:movie|film)\b", re.IGNORECASE)
+
+
 def youtube_tracklist(playlist_url: str) -> dict:
     """yt-dlp flat extraction of a playlist/album URL -> {name, tracks}."""
     opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
@@ -127,7 +130,8 @@ def youtube_tracklist(playlist_url: str) -> dict:
     tracks = []
     for e in entries:
         artist = _clean_channel(e.get("channel") or e.get("uploader") or "")
-        title = _clean_title(e.get("title") or "")
+        video_title = e.get("title") or ""
+        title = _clean_title(video_title)
         # CLiP titles often lead with the artist name ("LiSA "Makotoshiyaka"")
         # — strip it so the search query is "LiSA Makotoshiyaka", not the
         # doubled "LiSA LiSA ..." that drifts the top-6 ranking.
@@ -139,6 +143,7 @@ def youtube_tracklist(playlist_url: str) -> dict:
             "title": title,
             "duration": int(e.get("duration") or 0),
             "ref": e.get("id"),
+            "full_movie": bool(_FULL_MOVIE_TITLE.search(video_title)),
         })
     return {"name": info.get("title") or "Playlist", "tracks": tracks}
 

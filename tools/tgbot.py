@@ -160,6 +160,8 @@ def fmt_progress(p: dict) -> str:
         bits.append(f"⏭ {p['skipped']} already had")
     if p.get("failed"):
         bits.append(f"⚠️ {p['failed']} failed")
+    if p.get("ignored"):
+        bits.append(f"⏭ {p['ignored']} full movies skipped")
     line += "\n" + " · ".join(bits)
     if p.get("current") and done < total:
         line += f"\n<i>now: {html.escape(str(p['current']))[:80]}</i>"
@@ -679,17 +681,22 @@ def _link_download(chat: int, url: str, *, playlist_name: str = "", cancellable:
     name = html.escape(str(res.get("name") or "playlist"))
     total, dl = res.get("total", 0), res.get("downloaded", 0)
     skipped = res.get("skipped") or []
+    ignored = res.get("ignored") or []
     icon = "⚠️" if errs else "✅"
     head = f"{icon} <b>{name}</b> — {dl} downloaded"
     if skipped:
         head += f", ⏭ {len(skipped)} already had"
     head += f" (of {total})"
+    if ignored:
+        count = len(ignored)
+        movies = "full movie" if count == 1 else "full movies"
+        head += f"\n⏭ Skipped {count} {movies}."
     if res.get("limited"):
         head += f"\n⚠️ Only the first {res['limited']} songs of this Spotify playlist were available."
     if state["mid"]:
         edit(chat, state["mid"], fmt_progress({"name": res.get("name"), "total": total, "done": total,
                                                 "downloaded": dl, "skipped": len(skipped),
-                                                "failed": len(errs)}), **clear_controls)
+                                                "failed": len(errs), "ignored": len(ignored)}), **clear_controls)
     outs = res.get("outputs") or []
     if errs:
         head += f"\n⚠️ {len(errs)} tracks failed. The playlist finished processing."
