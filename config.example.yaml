@@ -1,12 +1,8 @@
 # Musicfetcherr configuration
 # Copy to config.yaml and adjust. config.yaml is gitignored (it holds secrets).
 
-# Engine order = QUALITY PRIORITY. Search lists sources top-to-bottom in this
-# order and tries the highest-quality tier first. Default favours lossless:
-#   qbit (FLAC) -> jiosaavn (320k AAC) -> youtube_music (~128k AAC)
-# Reorder freely (or drop a source) to suit your preference, then restart the
-# API service. A lossy source that FAILS to download falls back automatically
-# (failover to a higher-priority tier).
+# Enable and order sources for search. Add qbit after configuring its Web UI
+# and shared storage. YouTube playlists prefer JioSaavn when enabled.
 
 jiosaavn:
   # scratch space during download, auto-created — safe to leave as-is
@@ -17,14 +13,14 @@ youtube_music:
 
 qbit:
   # FLAC tier — lossless CD rips via local qBittorrent + public trackers.
-  url: http://127.0.0.1:1340
-  username: qbittorrent
+  url: http://127.0.0.1:8080
+  username: ""
   password: ""            # WebUI password (this file is the template; real one in gitignored config.yaml)
   category: musicfetcherr
   staging_dir: /opt/musicfetcherr/staging
 
 engine:
-  order: [qbit, jiosaavn, youtube_music]
+  order: [jiosaavn, youtube_music]
 
 output:
   # ★ CHANGE THIS FIRST — where finished songs land.
@@ -38,7 +34,7 @@ postprocess:
   musicbrainz: true
   lyrics: true
   cover: true
-  musicbrainz_ua: "Musicfetcherr/0.1 ( https://github.com/AadiSPrabs )"
+  musicbrainz_ua: "Musicfetcherr/0.1 (self-hosted)"
 
 api:
   host: 127.0.0.1
@@ -48,3 +44,10 @@ api:
 telegram_bot:
   token: ""   # BotFather token for your bot
   allowed_chats: []   # owner allowlist; add your telegram chat ids
+
+library:
+  skip_existing: true
+
+# Enable the JioSaavn country check for a native install using Indian egress.
+# egress:
+#   preferred_country: IN

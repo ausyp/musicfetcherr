@@ -8,7 +8,7 @@ seconds after the last track lands, not one per track.
 
 Config (config.yaml):
     navidrome:
-      url: http://192.168.1.20:4533
+      url: http://navidrome.example.test:4533
       user: admin
       password: ""
       debounce_seconds: 15

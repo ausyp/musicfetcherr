@@ -1,13 +1,44 @@
-# Deployment
+# Native deployment
 
-Musicfetcherr runs as two long-lived processes:
+For Docker or Portainer, use the [main setup guide](SETUP.md). In a native
+installation, the API and Telegram bot run as separate processes. The native
+installation uses the host’s networking unless you configure a route or proxy
+for the processes.
 
-1. **API** — uvicorn serving `api:app` on `127.0.0.1:8090`
-2. **Bot** — `tools/tgbot.py` long-polling Telegram
+## Install and verify
 
-Both are plain `systemd` units in this project (files below). The design
-assumption: the REST API binds **localhost only** — put it behind a reverse
-proxy (Caddy/nginx/Cloudflare Tunnel) if you want it reachable from outside.
+1. Install Python 3.11 or later, ffmpeg, and a JavaScript runtime supported by
+   yt-dlp. Musicfetcherr explicitly enables Node for YouTube downloads when
+   it is available on PATH. Clone this repository or your fork.
+2. From the checkout, create a virtual environment and configure the app.
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt 'yt-dlp[default]'
+cp config.example.yaml config.yaml
+chmod 600 config.yaml
+```
+
+3. Set `output.root` to an absolute, writable music directory. Configure
+   `telegram_bot.token` and `telegram_bot.allowed_chats`. Set writable staging
+   paths. The API listens on localhost by default. The bundled bot expects a
+   loopback API without an API key. API-only clients can use an optional key
+   as described in the [API reference](api.md).
+4. Start the API in one terminal.
+
+```sh
+.venv/bin/uvicorn api:app --host 127.0.0.1 --port 8090
+```
+
+Start the bot in a second terminal from the same checkout.
+
+```sh
+.venv/bin/python tools/tgbot.py
+```
+
+5. Check `http://127.0.0.1:8090/health` and send `/start` to the bot.
+   Set `egress.preferred_country: IN` in the native configuration if you want
+   the same pre-download JioSaavn country check as the Docker stack.
 
 ## systemd units
 
@@ -21,6 +52,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=musicfetcherr
+Group=musicfetcherr
 WorkingDirectory=/opt/musicfetcherr
 ExecStart=/opt/musicfetcherr/.venv/bin/uvicorn api:app --host 127.0.0.1 --port 8090
 Restart=always
@@ -40,6 +73,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=musicfetcherr
+Group=musicfetcherr
 WorkingDirectory=/opt/musicfetcherr
 ExecStart=/opt/musicfetcherr/.venv/bin/python tools/tgbot.py
 Restart=always
@@ -49,7 +84,9 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Install and enable:
+Adjust the example paths and service account for your installation. The account
+must be able to read the checkout and write the configured staging and music
+directories. Install and enable the units with the following commands.
 
 ```bash
 sudo systemctl daemon-reload
@@ -60,46 +97,11 @@ sudo systemctl status musicfetcherr-api musicfetcherr-bot
 The bot unit declares `After=musicfetcherr-api.service` so it doesn't race the
 API on boot.
 
-## Directory layout (this install)
+## Operations
 
-```
-/opt/musicfetcherr/          # the repo
-├── config.yaml           # real config (gitignored; start from config.example.yaml)
-├── staging/              # engine download scratch space (gitignored)
-└── .venv/                # virtualenv (gitignored)
-
-/mnt/hdd/media/music2test # output.root — the Jellyfin-scanned library
-```
-
-`staging/` lives on the root filesystem while the library is on a separate
-mount. That is deliberate and handled: the final move uses `shutil.move`
-(copy + delete across devices) rather than `os.replace`, which would raise
-`EXDEV` on cross-device links. Don't "optimize" that to a rename.
-
-## Dependencies
-
-- Python 3.11+ (developed on 3.13)
-- `ffmpeg` on PATH — used to convert WebP cover art to JPEG for embedding
-  (YouTube thumbnails arrive as WebP; MP4 `covr` atoms must carry real
-  image formats)
-- Network access to: `www.jiosaavn.com`, `music.youtube.com` /
-  `www.youtube.com`, `musicbrainz.org`, `coverartarchive.org`,
-  `lrclib.net`, `open.spotify.com`, `api.telegram.org`
-
-Everything is in `requirements.txt`; the Telegram bot uses only the Python
-stdlib for transport (urllib long-poll) — no bot framework needed.
-
-## Operations notes
-
-- **Queue is in-memory** — restarting the API drops queued/running jobs.
-  Jobs are short-lived (a song takes seconds to a couple of minutes), so
-  this is a non-issue in practice.
-- **Source liveness changes monthly** — JioSaavn/YouTube endpoints can
-  break without warning. If downloads start failing, check
-  `journalctl -u musicfetcherr-api -f` first; the engines log the failure
-  stage (search vs download vs which quality/player client).
-- **`config.yaml` contains secrets** (bot token, optional API key). It is
-  gitignored — never commit it.
-- **Ownership**: bot messages are refused for chat IDs outside
-  `telegram_bot.allowed_chats`. Add your own chat ID there or the bot will
-  answer "Not authorized."
+- Keep `config.yaml` private. It contains the bot token and may contain media
+  server credentials.
+- Restarting the API clears running jobs and their in-memory results.
+- Inspect API logs using `journalctl -u musicfetcherr-api -f`. Use
+  `journalctl -u musicfetcherr-bot -f` for Telegram problems.
+- The [qBittorrent guide](flac-research.md) covers the optional FLAC tier.
