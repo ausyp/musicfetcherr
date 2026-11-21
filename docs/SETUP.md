@@ -161,22 +161,32 @@ TZ=Etc/UTC
 
 ## Faster downloads: a direct connection
 
-Tailscale connects your server to the exit node directly when it can. When it can't, it relays traffic through Tailscale's own servers (called DERP), which works but is noticeably slower — long playlists can take a long time and requests can time out.
+Tailscale uses a direct UDP connection when it can and a relay when it needs one.
+A reachable UDP port on either end can help establish the direct connection.
 
-**Check which you have.** In the *musicfetcherr-tailscale* console run `tailscale ping 100.x.y.z` (your exit node):
-- `pong … via DERP(xxx)` — relayed (slow).
-- `pong … via 203.0.113.5:41641` — direct (fast). Nothing to do.
+**Forward to the Musicfetcherr Docker host**
 
-**To get a direct connection,** one side must accept incoming connections. Usually the easiest is the exit node's router:
+1. Deploy the updated stack. Both Compose variants publish UDP `53035` and set
+   the Tailscale sidecar to listen on that port. If the host already uses it,
+   set `TS_UDP_PORT` to a free UDP port in Portainer, then redeploy.
+2. Use the LAN IP of the machine or LXC running Docker. Reserve that IP in your router.
+3. On the router facing the internet, forward **UDP 53035** externally to
+   **UDP 53035** on that LAN IP. If you set `TS_UDP_PORT`, use it for both
+   ports. On ASUS, the setting is under **WAN → Virtual Server / Port Forwarding**.
+4. From the Docker host, run `docker port musicfetcherr-tailscale 53035/udp`
+   to verify the published port. From the Tailscale container console, run
+   `tailscale ping 100.x.y.z` with the exit node’s Tailscale IP. The first
+   replies may go through DERP. A reply via an IP and UDP port confirms a direct path.
 
-1. **Check the exit node's router isn't behind CGNAT.** In the router's status page, look at the WAN IP. If it's in `100.64.0.0`–`100.127.255.255` (or `10.x`), the internet provider is sharing one public IP between customers (CGNAT) and port forwarding there won't work — skip to the options below.
-2. **Forward UDP 41641** on the exit node's router to the exit-node device: *Advanced → NAT → Virtual Server* or *Port Forwarding*, protocol **UDP**, external and internal port **41641**, internal IP = the device's local IP, on the internet WAN connection. Reserve that local IP in the router's DHCP settings so it doesn't change.
-3. **Or turn on UPnP** on that router and let Tailscale open the port itself. Use this if the exit node is a Windows, Mac or Android device (they don't use a fixed port).
-4. Run `tailscale ping` again until it says `via <ip:port>`.
+**Forward at the India exit node instead**
 
-**If the exit node is behind CGNAT:**
-- Ask the internet provider for a public (static) IP — often a small add-on.
-- Or use a small cloud server in India as the exit node (e.g. Oracle Cloud free tier, AWS Lightsail Mumbai). It has a public IP, so the connection is direct. JioSaavn works fine; YouTube occasionally asks cloud IPs to "confirm you're not a bot", so YouTube Music can be less reliable there than from a home connection.
+Use the exit node device’s LAN IP and the UDP port its own `tailscaled`
+process listens on, commonly `41641` on Linux. If the exit node runs in Docker,
+publish its UDP port on that host as well.
+
+If a router’s WAN IP is in `100.64.0.0/10` or a private IPv4 range, it has
+upstream NAT. Forward at the upstream router if you control it. With ISP CGNAT,
+use the other end if it has a public WAN IP, or ask the ISP for a public IPv4 address.
 
 ## Everyday use, updates and settings
 
@@ -202,6 +212,7 @@ Tailscale connects your server to the exit node directly when it can. When it ca
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `TS_AUTHKEY`, `TS_EXIT_NODE` | — | Tailscale key + exit node IP (required) |
+| `TS_UDP_PORT` | `53035` | Tailscale UDP listen port, published on the Docker host for port forwarding |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHATS` | — | Your bot + who may use it (required) |
 | `MUSIC_PATH` | `/srv/music` | Server folder for songs (`docker-compose.yml`) |
 | `MUSIC_VOLUME`, `MUSIC_SUBDIR` | — | Existing Docker volume + folder inside it (`docker-compose.volume.yml`) |
