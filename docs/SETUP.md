@@ -183,6 +183,7 @@ Tailscale connects your server to the exit node directly when it can. When it ca
 **Bot commands**
 
 - Paste a link — a single track asks which source; an album or playlist downloads everything, with a live progress message (e.g. `▓▓▓▓░░░░ 12/40 · ✅ 9 · ⏭ 3 already had`). Long playlists are fine: the bot waits as long as it takes.
+- Tap **Cancel playlist** on its queue or progress message. A queued playlist stops immediately. A running playlist finishes the current track operation and skips the remaining tracks. Songs already saved stay in your library.
 - `search <song or artist>` — tap a result to download it.
 - `/status` — what's in the queue. `/help` — the command list.
 

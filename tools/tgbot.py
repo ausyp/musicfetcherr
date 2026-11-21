@@ -94,13 +94,15 @@ def say(chat: int, text: str, **kw):
         return None
 
 
-def edit(chat: int, message_id, text: str):
+def edit(chat: int, message_id, text: str, **kw) -> bool:
     if not message_id:
-        return
+        return False
     try:
-        tg("editMessageText", chat_id=chat, message_id=message_id, text=text, parse_mode="HTML")
+        tg("editMessageText", chat_id=chat, message_id=message_id, text=text, parse_mode="HTML", **kw)
+        return True
     except Exception as exc:  # "message is not modified" etc. — harmless
         log.debug("editMessageText: %s", exc)
+        return False
 
 
 def send_audio(chat: int, path: str, caption: str):
@@ -133,7 +135,7 @@ def poll_job(job_id: str, cap: int | None = 320, on_progress=None) -> dict:
                 break
             time.sleep(3)
             continue
-        if j.get("status") in ("done", "error"):
+        if j.get("status") in ("done", "error", "cancelled"):
             return j
         prog = j.get("progress")
         if on_progress and prog and prog != last:
@@ -513,6 +515,7 @@ def flow_link(chat: int, url: str):
     """A pasted link. A single track asks which quality; albums/playlists just download."""
     say(chat, f"🔗 resolving <i>{html.escape(url)}</i> — queued…")
     jid = None
+    playlist_name = ""
     try:
         jid = api("/api/resolve", {"url": url, "light": True})["job_id"]
     except Exception:
@@ -525,6 +528,7 @@ def flow_link(chat: int, url: str):
             return
         if j.get("status") == "done" and r.get("total"):
             kind = {"album": "album", "playlist": "playlist"}.get(r.get("kind"), "list")
+            playlist_name = str(r.get("name") or "")
             msg = (f"📋 <b>{html.escape(str(r.get('name') or kind))}</b> — {r['total']} tracks "
                    f"({kind}). Starting download…")
             if r.get("limited"):
@@ -533,7 +537,7 @@ def flow_link(chat: int, url: str):
         elif j.get("status") == "error":
             say(chat, job_failure(j, jid, "❌ Couldn’t read that link"))
             return
-    _link_download(chat, url)
+    _link_download(chat, url, playlist_name=playlist_name)
 
 
 def offer_link_quality(chat: int, url: str, pick: dict):
@@ -556,7 +560,7 @@ def offer_link_quality(chat: int, url: str, pick: dict):
         opts = dict(hit or {})
     opts[str(pick.get("source") or "link")] = pick  # the link's own source wins
     if len(opts) < 2:  # nothing to choose — download the link as before
-        _link_download(chat, url)
+        _link_download(chat, url, cancellable=False)
         return
     _alts[chat] = {**_alts.get(chat, {}), 0: opts}  # slot 0 = "this pasted link"
     head = f"{html.escape(art)} — {html.escape(tit)}" if art else html.escape(tit or "track")
@@ -566,29 +570,63 @@ def offer_link_quality(chat: int, url: str, pick: dict):
         reply_markup=json.dumps({"inline_keyboard": rows}))
 
 
-def _link_download(chat: int, url: str):
+def cancel_playlist(chat: int, job_id: str):
     try:
-        jid = api("/api/playlist", {"url": url})["job_id"]
+        status = api(f"/api/job/{job_id}/cancel", {"chat_id": chat}, timeout=10)["status"]
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            say(chat, "This playlist is no longer available to cancel.")
+        else:
+            say(chat, f"❌ Couldn’t cancel the playlist. {failure_reason(exc)}")
+        return
+    except Exception as exc:
+        say(chat, f"❌ Couldn’t cancel the playlist. {failure_reason(exc)}")
+        return
+    if status == "cancelling":
+        say(chat, "Stopping the playlist after the current track step finishes.")
+    elif status != "cancelled":
+        say(chat, "This playlist has already finished.")
+
+
+def _link_download(chat: int, url: str, *, playlist_name: str = "", cancellable: bool = True):
+    try:
+        jid = api("/api/playlist", {"url": url, "chat_id": chat})["job_id"]
     except Exception as exc:
         say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
-    try:
-        if api(f"/api/job/{jid}").get("status") == "queued":
-            say(chat, "⏳ waiting for the current download to finish first…")
-    except Exception:
-        pass
-    state = {"mid": None, "at": 0.0}
+    controls = {}
+    if cancellable:
+        controls["reply_markup"] = {"inline_keyboard": [[
+            {"text": "Cancel playlist", "callback_data": f"cancel:{jid}"}
+        ]]}
+    state = {"mid": None, "at": time.monotonic()}
+    if cancellable:
+        label = html.escape((playlist_name or url)[:240])
+        state["mid"] = say(chat, f"⏳ <b>{label}</b> queued or starting · Job <code>{html.escape(jid)}</code>",
+                           link_preview_options={"is_disabled": True}, **controls)
 
     def on_progress(p):
         text = fmt_progress(p)
         if state["mid"] is None:
-            state["mid"] = say(chat, text)
-            state["at"] = time.time()
-        elif time.time() - state["at"] >= 10:  # Telegram rate limits edits
-            edit(chat, state["mid"], text)
-            state["at"] = time.time()
+            state["mid"] = say(chat, text, **controls)
+            state["at"] = time.monotonic()
+        elif time.monotonic() - state["at"] >= 10:  # Telegram rate limits edits
+            edit(chat, state["mid"], text, **controls)
+            state["at"] = time.monotonic()
 
     j = poll_job(jid, cap=None, on_progress=on_progress)
+    clear_controls = {"reply_markup": {"inline_keyboard": []}}
+    if j["status"] == "cancelled":
+        p = j.get("progress") or {}
+        heading = "⏹ <b>Playlist cancelled</b>"
+        if p.get("total"):
+            heading += (f" after processing {p['done']}/{p['total']} tracks."
+                        f" {p['downloaded']} saved to your library.")
+        if not edit(chat, state["mid"], heading, **clear_controls):
+            say(chat, heading)
+        for message in playlist_failure_messages((j.get("result") or {}).get("errors") or [], jid):
+            say(chat, message, link_preview_options={"is_disabled": True})
+        return
     res = j.get("result") or {}
     if j["status"] != "done":
         heading = "❌ Link job stopped" if j["status"] == "error" else "⚠️ Link job status unavailable"
@@ -596,9 +634,12 @@ def _link_download(chat: int, url: str):
         if p.get("total"):
             heading += (f" after processing {p['done']}/{p['total']} tracks"
                         f" ({p['downloaded']} downloaded)")
+        if j["status"] == "error":
+            edit(chat, state["mid"], heading, **clear_controls)
         say(chat, job_failure(j, jid, heading))
         return
     if res.get("skipped") is True:
+        edit(chat, state["mid"], "⏭ Already in your library", **clear_controls)
         picked = res.get("picked") or {}
         say(chat, f"⏭ already in your library: <b>{html.escape(str(picked.get('artist') or ''))} — "
                   f"{html.escape(str(picked.get('title') or ''))}</b>\n<code>{html.escape(res['output'])}</code>")
@@ -622,6 +663,7 @@ def _link_download(chat: int, url: str):
         if len(res.get("attempts") or []) > 1:
             msg += f"\n<b>Sources tried</b>\n{tra}"
         msg += f"\n<code>{html.escape(out)}</code>"
+        edit(chat, state["mid"], "✅ Download finished", **clear_controls)
         say(chat, msg)
         try:
             if Path(out).stat().st_size < 50 * 1024 * 1024:
@@ -644,7 +686,7 @@ def _link_download(chat: int, url: str):
     if state["mid"]:
         edit(chat, state["mid"], fmt_progress({"name": res.get("name"), "total": total, "done": total,
                                                 "downloaded": dl, "skipped": len(skipped),
-                                                "failed": len(errs)}))
+                                                "failed": len(errs)}), **clear_controls)
     outs = res.get("outputs") or []
     if errs:
         head += f"\n⚠️ {len(errs)} tracks failed. The playlist finished processing."
@@ -695,6 +737,7 @@ HELP = (
     "• <code>search &lt;query&gt;</code> — find tracks\n"
     "• <code>download N</code> — grab result N from the last search\n"
     "• tapping a result shows its available qualities (FLAC / 320 / 128) — pick one\n"
+    "• Tap <b>Cancel playlist</b> on its queue or progress message to stop it\n"
     "• <code>/status</code> — queue state\n"
     "• <code>/help</code> — this\n\n"
     "Files land in the Jellyfin library; single tracks are also sent here as audio."
@@ -752,6 +795,11 @@ def main():
                     continue
                 if chat_id not in ALLOWED:
                     say(chat_id, "❌ Not authorized.")
+                    continue
+                m = re.fullmatch(r"cancel:([a-f0-9]{12})", cq.get("data") or "")
+                if m:
+                    threading.Thread(target=cancel_playlist, args=(chat_id, m.group(1)),
+                                     daemon=True).start()
                     continue
                 m = re.match(r"^dl:(\d+)$", cq.get("data") or "")
                 if m:

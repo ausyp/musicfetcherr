@@ -287,6 +287,8 @@ def run_job(payload: dict) -> dict:
 
     if kind == "playlist":
         d, pl = _resolve_url(payload["url"])
+        if queue.cancellation_requested():
+            return {}
         if d["kind"] == "track" and d["source"] == "youtube":
             # a single-link paste -> just download it. If the video's metadata
             # fetch failed (video removed/private/region-blocked), video_pick
@@ -294,6 +296,8 @@ def run_job(payload: dict) -> dict:
             # with, so fail clearly instead of a doomed download + pointless
             # FLAC attempt that surfaces the raw youtube error (2026-08-30).
             pick = ytm.video_pick(d["id"])
+            if queue.cancellation_requested():
+                return {}
             if not (pick.get("title") or "").strip():
                 raise EngineError(
                     "this YouTube video is unavailable (removed/private/"
@@ -325,6 +329,8 @@ def run_job(payload: dict) -> dict:
 
         progress(0)
         for i, t in enumerate(pl["tracks"], 1):
+            if queue.cancellation_requested():
+                break
             artist, title = (t.get("artist") or "").strip(), (t.get("title") or "").strip()
             query = " ".join(filter(None, (artist, title))) or t.get("ref") or ""
             label = " - ".join(filter(None, (artist, title))) or query or f"Track {i}"
@@ -345,6 +351,8 @@ def run_job(payload: dict) -> dict:
                 errors.append({**track_info, "error": "No matching track found on YouTube Music"
                                + (" or JioSaavn" if d["source"] == "spotify" and jio else "")})
                 continue
+            if queue.cancellation_requested():
+                break
             try:
                 # album links: force the album title; spotify tracks in plain
                 # playlists carry their own album; youtube playlists fall back
@@ -367,7 +375,7 @@ def run_job(payload: dict) -> dict:
                 errors.append({**track_info, "error": str(exc), "attempts": exc.attempts})
             except Exception as exc:
                 errors.append({**track_info, "error": str(exc) or type(exc).__name__})
-        progress(n)
+        progress(len(outputs) + len(errors) + len(skipped))
         return {"name": pl["name"], "total": len(pl["tracks"]),
                 "downloaded": len(outputs), "errors": errors, "outputs": outputs,
                 "skipped": skipped, "limited": pl.get("limited")}
@@ -397,6 +405,14 @@ class DownloadReq(BaseModel):
 class UrlReq(BaseModel):
     url: str
     light: bool = False  # resolve only: albums/playlists return name + count, no per-track matching
+
+
+class CancelPlaylistReq(BaseModel):
+    chat_id: int | None = None
+
+
+class PlaylistReq(UrlReq):
+    chat_id: int | None = None
 
 
 @app.get("/health")
@@ -432,12 +448,21 @@ def api_resolve(req: UrlReq, x_api_key: str | None = Header(None)):
 
 
 @app.post("/api/playlist")
-def api_playlist(req: UrlReq, x_api_key: str | None = Header(None)):
+def api_playlist(req: PlaylistReq, x_api_key: str | None = Header(None)):
     _check_api_key(x_api_key)
     if not req.url.strip():
         raise HTTPException(400, "url required")
-    job_id = queue.submit({"kind": "playlist", "url": req.url.strip()})
+    job_id = queue.submit({"kind": "playlist", "url": req.url.strip(), "chat_id": req.chat_id})
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/job/{job_id}/cancel")
+def api_cancel_playlist(job_id: str, req: CancelPlaylistReq, x_api_key: str | None = Header(None)):
+    _check_api_key(x_api_key)
+    status = queue.cancel_playlist(job_id, req.chat_id)
+    if status is None:
+        raise HTTPException(404, "unknown playlist job")
+    return {"job_id": job_id, "status": status}
 
 
 @app.get("/api/job/{job_id}")
