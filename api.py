@@ -70,6 +70,14 @@ def _resolve_url(url: str) -> tuple[dict, dict]:
         raise EngineError(f"unsupported link: {url}")
     if d["source"] == "spotify":
         pl = spotify_tracklist(d["kind"], d["id"])
+    elif d["kind"] == "track":
+        pick = ytm.video_pick(d["id"])
+        if not (pick.get("title") or "").strip():
+            raise EngineError(
+                "YouTube could not provide a song title for this link. "
+                "JioSaavn needs a title to search. Send search followed by "
+                "the song name and artist, or send a Spotify song link.")
+        pl = {"name": pick["title"], "tracks": [{**pick, "ref": d["id"], "pick": pick}]}
     else:
         pl = youtube_tracklist(url)
     return d, pl
@@ -294,7 +302,7 @@ def run_job(payload: dict) -> dict:
     if kind == "resolve":
         d, pl = _resolve_url(payload["url"])
         if d["kind"] == "track" and d["source"] == "youtube":
-            pick = ytm.video_pick(d["id"])
+            pick = pl["tracks"][0]["pick"]
             return {"kind": "track", "source": "youtube",
                     "name": pick.get("title") or d["id"], "pick": pick}
         if payload.get("light") and not (d["kind"] == "track" and len(pl["tracks"]) == 1):
@@ -315,20 +323,7 @@ def run_job(payload: dict) -> dict:
         if queue.cancellation_requested():
             return {}
         if d["kind"] == "track" and d["source"] == "youtube":
-            # a single-link paste -> just download it. If the video's metadata
-            # fetch failed (video removed/private/region-blocked), video_pick
-            # degraded to an empty title — there's nothing to search any engine
-            # with, so fail clearly instead of a doomed download + pointless
-            # FLAC attempt that surfaces the raw youtube error (2026-08-30).
-            pick = ytm.video_pick(d["id"])
-            if queue.cancellation_requested():
-                return {}
-            if not (pick.get("title") or "").strip():
-                raise EngineError(
-                    "this YouTube video is unavailable (removed/private/"
-                    "region-blocked) and no song title could be fetched — so "
-                    "YouTube Music and FLAC fallback searches need a song title. "
-                    "Paste a Spotify link or search by song name.")
+            pick = pl["tracks"][0]["pick"]
             original = dict(pick)
             attempts = []
             jio = _jio_engine()

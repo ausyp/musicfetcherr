@@ -11,7 +11,9 @@ pass (track/artist/album straight from the YT Music page).
 """
 from __future__ import annotations
 
+import json
 import logging
+import urllib.request
 import re
 import shutil
 from pathlib import Path
@@ -91,7 +93,30 @@ class YoutubeMusicEngine:
         """Full metadata for a single video id — used by the URL resolver
         (pasted youtube/ytmusic single links). Falls back to a minimal pick
         when the metadata pass fails so the download can still proceed."""
-        return self._meta(vid) or {
+        pick = self._meta(vid)
+        if pick:
+            return pick
+        # oEmbed exposes public title/uploader metadata without a playback request.
+        # Read it over the host connection so an exit-node playback restriction
+        # does not also prevent searching for the song on another provider.
+        url = "https://www.youtube.com/oembed?format=json&url=" + quote(
+            f"https://www.youtube.com/watch?v={vid}", safe="")
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(url, timeout=15) as response:
+                info = json.load(response)
+            title = info.get("title")
+            if isinstance(title, str) and title.strip():
+                return {
+                    "source": self.name, "track_id": vid, "title": title.strip(),
+                    "artist": info.get("author_name") or "", "song_artist": "",
+                    "album": "", "duration": 0, "quality": "AAC ~128",
+                    "plays": "", "year": None,
+                    "cover_url": info.get("thumbnail_url") or "",
+                }
+        except Exception as exc:
+            logger.warning("ytmusic: public title lookup for %s failed: %s", vid, type(exc).__name__)
+        return {
             "source": self.name, "track_id": vid, "artist": "", "title": "",
             "album": "", "duration": 0, "quality": "AAC ~128", "plays": "",
             "year": None, "cover_url": "",
