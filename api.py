@@ -303,8 +303,21 @@ def run_job(payload: dict) -> dict:
         d, pl = _resolve_url(payload["url"])
         if d["kind"] == "track" and d["source"] == "youtube":
             pick = pl["tracks"][0]["pick"]
+            choices, attempts = [pick], []
+            jio = _jio_engine()
+            if jio is not None:
+                try:
+                    preferred = match_jiosaavn(jio, pick)
+                    if preferred:
+                        choices.insert(0, preferred)
+                    else:
+                        attempts.append({"source": "jiosaavn", "status": "no_match"})
+                except Exception as exc:
+                    attempts.append({"source": "jiosaavn", "status": "failed",
+                                     "error": str(exc) or type(exc).__name__})
             return {"kind": "track", "source": "youtube",
-                    "name": pick.get("title") or d["id"], "pick": pick}
+                    "name": pick.get("title") or d["id"], "pick": pick,
+                    "choices": choices, "attempts": attempts}
         if payload.get("light") and not (d["kind"] == "track" and len(pl["tracks"]) == 1):
             # quick answer for the bot: what is this link? (matching every
             # track here would double the work of the playlist job)
@@ -446,7 +459,9 @@ def run_job(payload: dict) -> dict:
                 "skipped": skipped, "ignored": ignored, "limited": pl.get("limited")}
 
     # download + post-process
-    return _download_one(payload["pick"], payload.get("query", ""))
+    return _download_one(payload["pick"], payload.get("query", ""),
+                         original_video=payload.get("original_video"),
+                         prior_attempts=payload.get("prior_attempts"))
 
 
 queue = Queue(run_job)
@@ -465,6 +480,8 @@ class SearchReq(BaseModel):
 class DownloadReq(BaseModel):
     query: str
     pick: dict
+    original_video: dict | None = None
+    prior_attempts: list[dict] | None = None
 
 
 class UrlReq(BaseModel):
@@ -499,7 +516,8 @@ def api_download(req: DownloadReq, x_api_key: str | None = Header(None)):
     _check_api_key(x_api_key)
     if not req.query.strip() or not req.pick:
         raise HTTPException(400, "query and pick required")
-    job_id = queue.submit({"kind": "download", "query": req.query.strip(), "pick": req.pick})
+    job_id = queue.submit({"kind": "download", "query": req.query.strip(), "pick": req.pick,
+                           "original_video": req.original_video, "prior_attempts": req.prior_attempts})
     return {"job_id": job_id, "status": "queued"}
 
 

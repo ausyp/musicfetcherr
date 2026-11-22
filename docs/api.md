@@ -22,6 +22,11 @@ a loopback API with an empty token.
 | `POST /api/job/{job_id}/cancel` | `{}` | Requests cancellation for a playlist job |
 | `GET /api/jobs` | None | Jobs held in memory, in submission order |
 
+A single YouTube link’s resolve result can include `choices`, with the
+validated JioSaavn match before the original video, and `attempts` describing
+any unsuccessful JioSaavn lookup. A download request can pass `original_video`
+and `prior_attempts` from that result to preserve fallback information.
+
 ## Job lifecycle
 
 Submit a job, save the returned `job_id`, and poll its status endpoint. Jobs
