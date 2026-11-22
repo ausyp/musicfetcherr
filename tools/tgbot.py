@@ -46,6 +46,7 @@ _LINK_RE = re.compile(
 _ERR_RE = re.compile(r"^(?:error|failed):?\s*(.*)$", re.I)
 
 _picks: dict[int, dict[int, dict]] = {}  # chat_id -> {n: pick}
+_link_originals: dict[tuple[int, int], dict] = {}
 _alts: dict[int, dict[int, dict[str, dict]]] = {}  # chat_id -> {n: {source: candidate}}
 
 
@@ -520,11 +521,16 @@ def flow_download(chat: int, n: int):
         reply_markup=json.dumps({"inline_keyboard": rows}))
 
 
-def _do_download(chat: int, pick: dict):
+def _do_download(chat: int, pick: dict, *, original_video=None, prior_attempts=None):
     q = f"{pick.get('artist', '')} {pick.get('title', '')}".strip()
     say(chat, f"⬇️ downloading {fmt_pick(pick)}…")
     try:
-        jid = api("/api/download", {"query": q, "pick": pick})["job_id"]
+        body = {"query": q, "pick": pick}
+        if original_video is not None:
+            body["original_video"] = original_video
+        if prior_attempts:
+            body["prior_attempts"] = prior_attempts
+        jid = api("/api/download", body)["job_id"]
     except Exception as exc:
         say(chat, f"❌ Musicfetcherr API request failed. {failure_reason(exc)}")
         return
@@ -567,13 +573,15 @@ def flow_link(chat: int, url: str):
     playlist_name = ""
     try:
         jid = api("/api/resolve", {"url": url, "light": True})["job_id"]
-    except Exception:
-        jid = None
+    except Exception as exc:
+        say(chat, f"❌ Couldn’t queue this link. {failure_reason(exc)}")
+        return
     if jid:
-        j = poll_job(jid, cap=60)
+        j = poll_job(jid, cap=None)
         r = j.get("result") or {}
         if j.get("status") == "done" and r.get("kind") == "track" and r.get("pick"):
-            offer_link_quality(chat, url, r["pick"])
+            offer_link_quality(chat, url, r["pick"], choices=r.get("choices"),
+                               prior_attempts=r.get("attempts"))
             return
         if j.get("status") == "done" and r.get("total"):
             kind = {"album": "album", "playlist": "playlist"}.get(r.get("kind"), "list")
@@ -583,20 +591,20 @@ def flow_link(chat: int, url: str):
             if r.get("limited"):
                 msg += "\n" + LIMIT_NOTE.format(n=r["limited"])
             say(chat, msg)
-        elif j.get("status") == "error":
+        elif j.get("status") != "done":
             say(chat, job_failure(j, jid, "❌ Couldn’t read that link"))
             return
     _link_download(chat, url, playlist_name=playlist_name)
 
 
-def offer_link_quality(chat: int, url: str, pick: dict):
+def offer_link_quality(chat: int, url: str, pick: dict, *, choices=None, prior_attempts=None):
     """Offer the sources that actually hold this track. The pasted link's own
     pick is always on the list, so tapping it is the old download-the-link path."""
     art = str(pick.get("artist") or "").strip()
     tit = str(pick.get("title") or "").strip()
     q = f"{art} {tit}".strip()
-    opts: dict[str, dict] = {}
-    if q:
+    opts = {str(c.get("source") or "link"): c for c in choices or []}
+    if choices is None and q:
         say(chat, "🔎 checking which sources have this track…")
         try:
             jid = api("/api/search", {"query": q})["job_id"]
@@ -610,13 +618,18 @@ def offer_link_quality(chat: int, url: str, pick: dict):
     opts[str(pick.get("source") or "link")] = pick  # preserve the linked version
     priority = {"jiosaavn": 0, "youtube_music": 1}
     opts = dict(sorted(opts.items(), key=lambda item: priority.get(item[0], 2)))
-    if len(opts) < 2:  # nothing to choose — download the link as before
-        _link_download(chat, url, cancellable=False)
+    if len(opts) < 2:
+        if choices is not None:
+            _do_download(chat, pick, original_video=pick, prior_attempts=prior_attempts)
+        else:
+            _link_download(chat, url, cancellable=False)
         return
-    _alts[chat] = {**_alts.get(chat, {}), 0: opts}  # slot 0 = "this pasted link"
+    slot = int(uuid.uuid4().hex[:12], 16)
+    _alts[chat] = {**_alts.get(chat, {}), slot: opts}
+    _link_originals[chat, slot] = pick
     head = f"{html.escape(art)} — {html.escape(tit)}" if art else html.escape(tit or "track")
     dur = f" ({fmt_dur(pick.get('duration'))})" if pick.get("duration") else ""
-    rows = [[{"text": _qbtn(c), "callback_data": f"q:0:{s}"} for s, c in opts.items()]]
+    rows = [[{"text": _qbtn(c), "callback_data": f"q:{slot}:{s}"} for s, c in opts.items()]]
     say(chat, f"🎚 <b>Choose quality</b> — {head}{dur}",
         reply_markup=json.dumps({"inline_keyboard": rows}))
 
@@ -868,8 +881,9 @@ def main():
                     if not cand:
                         say(chat_id, "❌ that choice expired — search again")
                         continue
+                    original = _link_originals.get((chat_id, int(m.group(1))))
                     threading.Thread(target=_do_download, args=(chat_id, cand),
-                                     daemon=True).start()
+                                     kwargs={"original_video": original}, daemon=True).start()
                 continue
             msg = u.get("message") or {}
             chat_id = (msg.get("chat") or {}).get("id")

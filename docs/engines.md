@@ -47,6 +47,15 @@ Each attempt has its own status and error, and the successful attempt is used
 to label the downloaded source in Telegram. YouTube can require sign-in or
 withhold the requested format. Removed videos need another available recording.
 
+For a single YouTube link, Musicfetcherr reads the video metadata directly.
+If playback metadata is blocked, it tries YouTube’s public oEmbed title lookup
+using the Docker host connection, then searches JioSaavn with that title.
+If both lookups fail, the bot asks for a song-name search or a Spotify link.
+The single-link picker receives validated JioSaavn alternatives from the resolver.
+Uploader names are not used as singer identity when comparing those alternatives.
+Each link has its own source buttons, and its original video remains available
+as a fallback if the selected source fails.
+
 ## Library output
 
 When duplicate checks are enabled, the library is searched by artist and title
